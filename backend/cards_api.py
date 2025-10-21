@@ -86,6 +86,7 @@ class Card(BaseModel):
     title: str
     color: str
     prompt: str = ""
+    number: Optional[int] = None
     createdAt: str
 
 
@@ -133,6 +134,7 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
             title = request.title or card_style["name"]
             color = request.color or card_style["color"]
         prompt = request.prompt or random.choice(LOREM_SENTENCES)
+        number = random.randint(1, 99)
         created_at = datetime.now(timezone.utc).isoformat()
 
         # Save to Datastore
@@ -144,6 +146,7 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
             "title": title,
             "color": color,
             "prompt": prompt,
+            "number": number,
             "createdAt": created_at,
         })
         logger.debug(f"Created entity: {time.time() - t1:.3f}s")
@@ -162,6 +165,7 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
                     "title": title,
                     "color": color,
                     "prompt": prompt,
+                    "number": number,
                     "createdAt": created_at,
                 })
                 blob.upload_from_string(card_json, content_type="application/json")
@@ -175,6 +179,7 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
             title=title,
             color=color,
             prompt=prompt,
+            number=number,
             createdAt=created_at
         )
 
@@ -253,6 +258,7 @@ async def update_card(card_id: str, request: UpdateCardRequest):
             title=entity.get("title"),
             color=entity.get("color"),
             prompt=entity.get("prompt", ""),
+            number=entity.get("number"),
             createdAt=entity.get("createdAt")
         )
 
@@ -298,6 +304,7 @@ async def fetch_cards(request: FetchCardsRequest):
                     title=entity.get("title", "Untitled"),
                     color=entity.get("color", "#CCCCCC"),
                     prompt=entity.get("prompt", ""),
+                    number=entity.get("number"),
                     createdAt=entity.get("createdAt", "")
                 ))
 
@@ -459,6 +466,7 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
             title = card_style["name"]
             color = card_style["color"]
             prompt = random.choice(LOREM_SENTENCES)
+            number = random.randint(1, 99)  # Random number 1-99
             created_at = datetime.now(timezone.utc).isoformat()
 
             # Prepare entity for batch write
@@ -469,6 +477,7 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
                 "title": title,
                 "color": color,
                 "prompt": prompt,
+                "number": number,
                 "createdAt": created_at,
             })
             all_entities.append(entity)
@@ -477,7 +486,8 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
                 "cardId": card_id,
                 "title": title,
                 "color": color,
-                "prompt": prompt
+                "prompt": prompt,
+                "number": number
             })
 
         # Batch write all cards to Datastore at once

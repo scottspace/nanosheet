@@ -33,11 +33,30 @@
   let dragPreview: { targetCol: string; targetRow: string; insertBefore: boolean } | null = $state(null)
   let isDragging = $state(false)
   let dragMousePos = $state({ x: 0, y: 0 })
+
+  // Column Drag State
+  let draggedColumn: string | null = null
+  let columnDragPreview: { targetColIndex: number; insertBefore: boolean } | null = $state(null)
+  let isColumnDragging = $state(false)
+
+  // Scroll sync refs
+  let frozenRowRef: HTMLDivElement | null = null
+  let columnsContainerRef: HTMLDivElement | null = null
+
+  // Confirmation dialog state
+  let showConfirmDialog = $state(false)
+  let confirmMessage = $state('')
+  let confirmCallback: (() => void) | null = null
+
   let showModal = $state(false)
   let modalCardId = $state<string | null>(null)
+  let modalMediaId = $state<string | null>(null)  // Specific media/attachment being edited
   let modalPrompt = $state('')
+  let promptTextRef: HTMLTextAreaElement | null = null
+  let promptYText: Y.Text | null = null
   let modalTitle = $state('')
   let modalColor = $state('#CCCCCC')
+  let attachments: any[] = $state([])  // Attachments for current card
 
   // Canvas drawing state
   let canvasRef: HTMLCanvasElement | null = null
@@ -45,7 +64,7 @@
   let currentColor = $state('white')
   let drawingStrokes: any[] = $state([])
 
-  // Per-card drawing undo/redo stacks
+  // Per-media drawing undo/redo stacks (keyed by mediaId)
   let drawingHistory: Map<string, any[][]> = new Map()
   let drawingRedoStack: Map<string, any[][]> = new Map()
 
@@ -225,23 +244,237 @@
   function handleDeleteCard(rowId: string, colId: string) {
     if (!sheet) return
 
-    // Save to undo stack before deleting
-    const cellKey = `${rowId}:${colId}`
-    const cell = cellsMap.get(cellKey)
-    if (cell && cell.cardId) {
-      undoStack.push({
-        type: 'delete',
-        userId: USER_ID,
-        rowId,
-        colId,
-        cardId: cell.cardId
+    // Check if this is the frozen row (first row) - deleting it deletes the whole column
+    const isFrozenRow = rows.length > 0 && rowId === rows[0]
+
+    if (isFrozenRow) {
+      // Count how many cards are in this column
+      const cardsInColumn = rows.filter(r => {
+        const cellKey = `${r}:${colId}`
+        const cell = cellsMap.get(cellKey)
+        return cell && cell.cardId
+      }).length
+
+      showConfirm(
+        `Delete this entire column? This will delete ${cardsInColumn} card${cardsInColumn !== 1 ? 's' : ''} and cannot be undone.`,
+        () => deleteColumn(colId)
+      )
+    } else {
+      // Save to undo stack before deleting single card
+      const cellKey = `${rowId}:${colId}`
+      const cell = cellsMap.get(cellKey)
+      if (cell && cell.cardId) {
+        undoStack.push({
+          type: 'delete',
+          userId: USER_ID,
+          rowId,
+          colId,
+          cardId: cell.cardId
+        })
+        // Clear redo stack on new action
+        redoStack = []
+        console.log('[handleDeleteCard] Saved to undo stack:', undoStack.length)
+      }
+
+      deleteCard(sheet, rowId, colId)
+    }
+  }
+
+  // Delete entire column
+  function deleteColumn(colId: string) {
+    if (!sheet) return
+
+    const colIndex = cols.indexOf(colId)
+    if (colIndex === -1) return
+
+    // Delete all cells in this column
+    rows.forEach(rowId => {
+      const cellKey = `${rowId}:${colId}`
+      sheet!.cells.delete(cellKey)
+    })
+
+    // Remove column from colOrder
+    sheet.colOrder.delete(colIndex, 1)
+
+    console.log('[deleteColumn] Deleted column:', colId)
+  }
+
+  // Duplicate column
+  function duplicateColumn(sourceColId: string) {
+    if (!sheet) return
+
+    const sourceIndex = cols.indexOf(sourceColId)
+    if (sourceIndex === -1) return
+
+    // Create new column to the right of source
+    const newColId = addCol(sheet)
+
+    // Save to undo stack
+    undoStack.push({
+      type: 'duplicateColumn',
+      userId: USER_ID,
+      colId: newColId,
+      sourceColId: sourceColId
+    })
+    redoStack = []
+
+    // Copy all cells from source column to new column
+    rows.forEach(rowId => {
+      const sourceKey = `${rowId}:${sourceColId}`
+      const cell = sheet!.cells.get(sourceKey)
+      if (cell) {
+        const newKey = `${rowId}:${newColId}`
+        sheet!.cells.set(newKey, { ...cell })
+      }
+    })
+
+    console.log('[duplicateColumn] Duplicated column', sourceColId, 'to', newColId)
+  }
+
+  // Column drag handlers
+  function handleColumnDragStart(e: DragEvent, colId: string) {
+    draggedColumn = colId
+    isColumnDragging = true
+
+    // Set drag data
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = 'move'
+      e.dataTransfer.setData('text/plain', colId)
+
+      // Create a custom drag image showing the entire column
+      const dragPreview = document.createElement('div')
+      dragPreview.style.position = 'absolute'
+      dragPreview.style.top = '-9999px'
+      dragPreview.style.left = '-9999px'
+      dragPreview.style.display = 'flex'
+      dragPreview.style.flexDirection = 'column'
+      dragPreview.style.gap = `${THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035}px`
+      dragPreview.style.opacity = '0.7'
+      dragPreview.style.pointerEvents = 'none'
+
+      // Find all cards in this column
+      const colIndex = cols.indexOf(colId)
+      const columnCards = rows.map(rowId => {
+        const cellKey = `${rowId}:${colId}`
+        const cell = cellsMap.get(cellKey)
+        const cardId = cell?.cardId
+        return cardId ? cardsMetadata.get(cardId) : null
+      }).filter(card => card !== null)
+
+      // Add card previews to the drag image
+      columnCards.forEach(card => {
+        const cardDiv = document.createElement('div')
+        cardDiv.style.width = `${THUMBNAIL_SIZES[selectedThumbnailSize].width}px`
+        cardDiv.style.height = `${THUMBNAIL_SIZES[selectedThumbnailSize].height}px`
+        cardDiv.style.backgroundColor = card.color
+        cardDiv.style.borderRadius = '8px'
+        cardDiv.style.display = 'flex'
+        cardDiv.style.alignItems = 'center'
+        cardDiv.style.justifyContent = 'center'
+        cardDiv.style.color = 'rgba(255, 255, 255, 0.9)'
+        cardDiv.style.fontSize = '0.75rem'
+        cardDiv.style.padding = '0.5rem'
+        cardDiv.style.textAlign = 'center'
+        cardDiv.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.2)'
+        cardDiv.textContent = card.title
+        dragPreview.appendChild(cardDiv)
       })
-      // Clear redo stack on new action
-      redoStack = []
-      console.log('[handleDeleteCard] Saved to undo stack:', undoStack.length)
+
+      document.body.appendChild(dragPreview)
+      e.dataTransfer.setDragImage(dragPreview, THUMBNAIL_SIZES[selectedThumbnailSize].width / 2, 20)
+
+      // Remove the preview element after a brief delay
+      setTimeout(() => {
+        document.body.removeChild(dragPreview)
+      }, 0)
     }
 
-    deleteCard(sheet, rowId, colId)
+    console.log('[handleColumnDragStart] Dragging column:', colId)
+  }
+
+  function handleColumnDragOver(e: DragEvent, targetColId: string) {
+    if (!draggedColumn || draggedColumn === targetColId) return
+
+    e.preventDefault()
+    if (e.dataTransfer) {
+      e.dataTransfer.dropEffect = 'move'
+    }
+
+    // Calculate if we should insert before or after the target
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const midpoint = rect.left + rect.width / 2
+    const insertBefore = e.clientX < midpoint
+
+    const targetIndex = cols.indexOf(targetColId)
+
+    if (targetIndex === -1) return
+
+    columnDragPreview = {
+      targetColIndex: targetIndex,
+      insertBefore
+    }
+  }
+
+  function handleColumnDrop(e: DragEvent, targetColId: string) {
+    e.preventDefault()
+    e.stopPropagation()
+
+    if (!draggedColumn || !sheet || draggedColumn === targetColId) {
+      resetColumnDrag()
+      return
+    }
+
+    const sourceIndex = cols.indexOf(draggedColumn)
+    const targetIndex = cols.indexOf(targetColId)
+
+    if (sourceIndex === -1 || targetIndex === -1) {
+      resetColumnDrag()
+      return
+    }
+
+    // Determine final insert position
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const midpoint = rect.left + rect.width / 2
+    const insertBefore = e.clientX < midpoint
+
+    let finalIndex = insertBefore ? targetIndex : targetIndex + 1
+
+    // Adjust if dragging from left to right
+    if (sourceIndex < finalIndex) {
+      finalIndex--
+    }
+
+    if (sourceIndex !== finalIndex) {
+      // Save to undo stack
+      undoStack.push({
+        type: 'reorderColumn',
+        userId: USER_ID,
+        colId: draggedColumn,
+        fromIndex: sourceIndex,
+        toIndex: finalIndex
+      })
+      redoStack = []
+
+      // Reorder in Yjs
+      const colsArray = sheet.colOrder.toArray()
+      const [movedCol] = colsArray.splice(sourceIndex, 1)
+      colsArray.splice(finalIndex, 0, movedCol)
+
+      // Update Yjs
+      sheet.colOrder.delete(0, sheet.colOrder.length)
+      sheet.colOrder.push(colsArray)
+
+      console.log('[handleColumnDrop] Reordered column', draggedColumn, 'from', sourceIndex, 'to', finalIndex)
+    }
+
+    resetColumnDrag()
+  }
+
+  function resetColumnDrag() {
+    draggedColumn = null
+    isColumnDragging = false
+    columnDragPreview = null
+    visualColumnOrder = []
   }
 
   // Undo the last operation by the current user
@@ -337,6 +570,39 @@
         }
       } catch (error) {
         console.error('[handleUndo] Error restoring card:', error)
+      }
+    } else if (operation.type === 'reorderColumn' && sheet) {
+      // Undo column reorder
+      redoStack.push(operation)
+
+      const colsArray = sheet.colOrder.toArray()
+      const [movedCol] = colsArray.splice(operation.toIndex, 1)
+      colsArray.splice(operation.fromIndex, 0, movedCol)
+
+      sheet.colOrder.delete(0, sheet.colOrder.length)
+      sheet.colOrder.push(colsArray)
+
+      console.log('[handleUndo] Restored column order', operation.colId, 'from', operation.toIndex, 'to', operation.fromIndex)
+    } else if (operation.type === 'duplicateColumn' && sheet) {
+      // Undo column duplication by deleting the duplicated column
+      redoStack.push(operation)
+
+      const colsArray = sheet.colOrder.toArray()
+      const colIndex = colsArray.indexOf(operation.colId)
+
+      if (colIndex !== -1) {
+        // Delete the column from colOrder
+        colsArray.splice(colIndex, 1)
+        sheet.colOrder.delete(0, sheet.colOrder.length)
+        sheet.colOrder.push(colsArray)
+
+        // Delete all cells in this column
+        rows.forEach(rowId => {
+          const cellKey = `${rowId}:${operation.colId}`
+          sheet!.cells.delete(cellKey)
+        })
+
+        console.log('[handleUndo] Deleted duplicated column', operation.colId)
       }
     }
   }
@@ -442,6 +708,43 @@
         }
       } catch (error) {
         console.error('[handleRedo] Error reapplying card:', error)
+      }
+    } else if (operation.type === 'reorderColumn' && sheet) {
+      // Redo column reorder
+      undoStack.push(operation)
+
+      const colsArray = sheet.colOrder.toArray()
+      const [movedCol] = colsArray.splice(operation.fromIndex, 1)
+      colsArray.splice(operation.toIndex, 0, movedCol)
+
+      sheet.colOrder.delete(0, sheet.colOrder.length)
+      sheet.colOrder.push(colsArray)
+
+      console.log('[handleRedo] Re-reordered column', operation.colId, 'from', operation.fromIndex, 'to', operation.toIndex)
+    } else if (operation.type === 'duplicateColumn' && sheet) {
+      // Redo column duplication
+      undoStack.push(operation)
+
+      // Re-add the column
+      const colsArray = sheet.colOrder.toArray()
+      const sourceIndex = colsArray.indexOf(operation.sourceColId)
+
+      if (sourceIndex !== -1) {
+        colsArray.splice(sourceIndex + 1, 0, operation.colId)
+        sheet.colOrder.delete(0, sheet.colOrder.length)
+        sheet.colOrder.push(colsArray)
+
+        // Re-copy all cells from source column
+        rows.forEach(rowId => {
+          const sourceKey = `${rowId}:${operation.sourceColId}`
+          const cell = sheet!.cells.get(sourceKey)
+          if (cell) {
+            const newKey = `${rowId}:${operation.colId}`
+            sheet!.cells.set(newKey, { ...cell })
+          }
+        })
+
+        console.log('[handleRedo] Re-duplicated column', operation.sourceColId, 'to', operation.colId)
       }
     }
   }
@@ -549,17 +852,29 @@
     // Escape cancels drag
     if (event.key === 'Escape' && isDragging) {
       event.preventDefault()
-      console.log('[handleKeydown] Canceling drag with Escape')
+      console.log('[handleKeydown] Canceling card drag with Escape')
       isDragging = false
       dragPreview = null
       draggedCard = null
       return
     }
 
+    // Escape cancels column drag
+    if (event.key === 'Escape' && isColumnDragging) {
+      event.preventDefault()
+      console.log('[handleKeydown] Canceling column drag with Escape')
+      resetColumnDrag()
+      return
+    }
+
     // Check for Cmd+Z (Mac) or Ctrl+Z (Windows/Linux)
     if ((event.metaKey || event.ctrlKey) && event.key === 'z') {
       event.preventDefault()
-      handleUndo()
+      if (event.shiftKey) {
+        handleRedo()
+      } else {
+        handleUndo()
+      }
     }
   }
 
@@ -750,14 +1065,31 @@
   function handleCardDoubleClick(cardId: string) {
     const card = cardsMetadata.get(cardId)
     modalCardId = cardId
+
+    // Set the media ID - for now, default media for the card
+    // In the future, this could be a specific attachment ID
+    modalMediaId = `${cardId}_default`
+
     modalTitle = card?.title || ''
     modalColor = card?.color || '#CCCCCC'
     modalPrompt = card?.prompt || ''
+    attachments = card?.attachments || []
 
-    // Load existing drawings if any
+    // Set up Yjs Text for collaborative prompt editing
     if (sheet) {
-      const cardDrawings = sheet.doc.getMap(`drawings_${cardId}`)
-      const strokesData = cardDrawings.get('strokes')
+      promptYText = sheet.doc.getText(`prompt_${cardId}`)
+
+      // Initialize the Yjs Text with current prompt if empty
+      if (promptYText.length === 0 && modalPrompt) {
+        promptYText.insert(0, modalPrompt)
+      } else {
+        // Load from Yjs
+        modalPrompt = promptYText.toString()
+      }
+
+      // Load existing drawings for this specific media
+      const mediaDrawings = sheet.doc.getMap(`drawings_${modalMediaId}`)
+      const strokesData = mediaDrawings.get('strokes')
       if (strokesData) {
         try {
           drawingStrokes = JSON.parse(strokesData as string)
@@ -768,9 +1100,9 @@
         drawingStrokes = []
       }
 
-      // Observe drawing changes from other users
-      cardDrawings.observe(() => {
-        const updatedStrokes = cardDrawings.get('strokes')
+      // Observe drawing changes from other users for this media
+      mediaDrawings.observe(() => {
+        const updatedStrokes = mediaDrawings.get('strokes')
         if (updatedStrokes) {
           try {
             drawingStrokes = JSON.parse(updatedStrokes as string)
@@ -784,21 +1116,31 @@
 
     showModal = true
 
-    // Initialize canvas after modal is shown
+    // Initialize canvas and prompt binding after modal is shown
     setTimeout(() => {
       if (canvasRef) {
         initCanvas(canvasRef)
+      }
+      if (promptTextRef && promptYText) {
+        bindPromptToYjs()
       }
     }, 100)
   }
 
   // Close modal
   function closeModal() {
+    // Cleanup Yjs binding
+    if (promptTextRef && (promptTextRef as any)._yjsCleanup) {
+      (promptTextRef as any)._yjsCleanup()
+    }
+
     showModal = false
     modalCardId = null
+    modalMediaId = null
     modalPrompt = ''
     modalTitle = ''
     modalColor = '#CCCCCC'
+    promptYText = null
   }
 
   // Save modal changes
@@ -885,9 +1227,9 @@
     drawingStrokes = [...drawingStrokes, newStroke]
 
     // Sync to Yjs
-    if (sheet && modalCardId) {
-      const cardDrawings = sheet.doc.getMap(`drawings_${modalCardId}`)
-      cardDrawings.set('strokes', JSON.stringify(drawingStrokes))
+    if (sheet && modalMediaId) {
+      const mediaDrawings = sheet.doc.getMap(`drawings_${modalMediaId}`)
+      mediaDrawings.set('strokes', JSON.stringify(drawingStrokes))
     }
   }
 
@@ -919,40 +1261,40 @@
       }
 
       // Sync to Yjs
-      if (sheet && modalCardId) {
-        const cardDrawings = sheet.doc.getMap(`drawings_${modalCardId}`)
-        cardDrawings.set('strokes', JSON.stringify(drawingStrokes))
+      if (sheet && modalMediaId) {
+        const mediaDrawings = sheet.doc.getMap(`drawings_${modalMediaId}`)
+        mediaDrawings.set('strokes', JSON.stringify(drawingStrokes))
       }
     }
   }
 
   function stopDrawing() {
-    if (isDrawing && modalCardId) {
-      // Save current state to history when stroke is complete
-      const history = drawingHistory.get(modalCardId) || []
+    if (isDrawing && modalMediaId) {
+      // Save current state to history when stroke is complete (per media)
+      const history = drawingHistory.get(modalMediaId) || []
       history.push(JSON.parse(JSON.stringify(drawingStrokes)))
-      drawingHistory.set(modalCardId, history)
+      drawingHistory.set(modalMediaId, history)
 
       // Clear redo stack on new stroke
-      drawingRedoStack.set(modalCardId, [])
+      drawingRedoStack.set(modalMediaId, [])
     }
     isDrawing = false
   }
 
   function undoStroke() {
-    if (!modalCardId) return
+    if (!modalMediaId) return
 
-    const history = drawingHistory.get(modalCardId) || []
+    const history = drawingHistory.get(modalMediaId) || []
     if (history.length === 0) return
 
     // Pop the last state from history
     const previousState = history.pop()
-    drawingHistory.set(modalCardId, history)
+    drawingHistory.set(modalMediaId, history)
 
     // Save current state to redo stack
-    const redoStack = drawingRedoStack.get(modalCardId) || []
+    const redoStack = drawingRedoStack.get(modalMediaId) || []
     redoStack.push(JSON.parse(JSON.stringify(drawingStrokes)))
-    drawingRedoStack.set(modalCardId, redoStack)
+    drawingRedoStack.set(modalMediaId, redoStack)
 
     // Restore previous state
     if (previousState) {
@@ -961,26 +1303,26 @@
 
       // Sync to Yjs
       if (sheet) {
-        const cardDrawings = sheet.doc.getMap(`drawings_${modalCardId}`)
-        cardDrawings.set('strokes', JSON.stringify(drawingStrokes))
+        const mediaDrawings = sheet.doc.getMap(`drawings_${modalMediaId}`)
+        mediaDrawings.set('strokes', JSON.stringify(drawingStrokes))
       }
     }
   }
 
   function redoStroke() {
-    if (!modalCardId) return
+    if (!modalMediaId) return
 
-    const redoStack = drawingRedoStack.get(modalCardId) || []
+    const redoStack = drawingRedoStack.get(modalMediaId) || []
     if (redoStack.length === 0) return
 
     // Pop from redo stack
     const nextState = redoStack.pop()
-    drawingRedoStack.set(modalCardId, redoStack)
+    drawingRedoStack.set(modalMediaId, redoStack)
 
     // Save current state to history
-    const history = drawingHistory.get(modalCardId) || []
+    const history = drawingHistory.get(modalMediaId) || []
     history.push(JSON.parse(JSON.stringify(drawingStrokes)))
-    drawingHistory.set(modalCardId, history)
+    drawingHistory.set(modalMediaId, history)
 
     // Restore next state
     if (nextState) {
@@ -989,8 +1331,8 @@
 
       // Sync to Yjs
       if (sheet) {
-        const cardDrawings = sheet.doc.getMap(`drawings_${modalCardId}`)
-        cardDrawings.set('strokes', JSON.stringify(drawingStrokes))
+        const mediaDrawings = sheet.doc.getMap(`drawings_${modalMediaId}`)
+        mediaDrawings.set('strokes', JSON.stringify(drawingStrokes))
       }
     }
   }
@@ -1005,9 +1347,105 @@
     }
 
     // Sync to Yjs
-    if (sheet && modalCardId) {
-      const cardDrawings = sheet.doc.getMap(`drawings_${modalCardId}`)
-      cardDrawings.set('strokes', JSON.stringify([]))
+    if (sheet && modalMediaId) {
+      const mediaDrawings = sheet.doc.getMap(`drawings_${modalMediaId}`)
+      mediaDrawings.set('strokes', JSON.stringify([]))
+    }
+  }
+
+  // Bind textarea to Yjs Text for collaborative editing
+  function bindPromptToYjs() {
+    if (!promptTextRef || !promptYText) return
+
+    let isLocalChange = false
+
+    // Handle local input events
+    const handleInput = () => {
+      if (!promptTextRef || !promptYText) return
+      isLocalChange = true
+
+      const currentText = promptYText.toString()
+      const newText = promptTextRef.value
+
+      // Calculate diff and apply to Yjs
+      if (currentText !== newText) {
+        promptYText.delete(0, currentText.length)
+        promptYText.insert(0, newText)
+      }
+
+      isLocalChange = false
+    }
+
+    // Observe remote changes from other users
+    const observer = () => {
+      if (isLocalChange || !promptTextRef || !promptYText) return
+
+      const newText = promptYText.toString()
+
+      // Only update if there's an actual change
+      if (promptTextRef.value === newText) return
+
+      // Check if user is actively editing this field
+      const isActivelyEditing = document.activeElement === promptTextRef
+
+      if (isActivelyEditing) {
+        // User is typing - preserve cursor position carefully
+        const start = promptTextRef.selectionStart || 0
+        const end = promptTextRef.selectionEnd || 0
+
+        promptTextRef.value = newText
+        modalPrompt = newText
+
+        // Restore cursor position
+        requestAnimationFrame(() => {
+          if (promptTextRef) {
+            promptTextRef.setSelectionRange(start, end)
+          }
+        })
+      } else {
+        // User is not editing - just update the value
+        promptTextRef.value = newText
+        modalPrompt = newText
+      }
+    }
+
+    promptYText.observe(observer)
+    promptTextRef.addEventListener('input', handleInput)
+
+    // Cleanup on modal close
+    const cleanup = () => {
+      if (promptYText) {
+        promptYText.unobserve(observer)
+      }
+      if (promptTextRef) {
+        promptTextRef.removeEventListener('input', handleInput)
+      }
+    }
+
+    // Store cleanup function for later use
+    ;(promptTextRef as any)._yjsCleanup = cleanup
+  }
+
+  // Format JSON in the prompt field
+  function formatPromptAsJSON() {
+    if (!modalPrompt) return
+
+    try {
+      // Try to parse and format as JSON
+      const parsed = JSON.parse(modalPrompt)
+      const formatted = JSON.stringify(parsed, null, 2)
+
+      if (promptYText) {
+        promptYText.delete(0, promptYText.length)
+        promptYText.insert(0, formatted)
+      }
+      modalPrompt = formatted
+      if (promptTextRef) {
+        promptTextRef.value = formatted
+      }
+    } catch (e) {
+      // If it's not valid JSON, just try to pretty-print it anyway
+      console.warn('Prompt is not valid JSON, cannot format')
     }
   }
 
@@ -1040,6 +1478,26 @@
     currentColor = color
   }
 
+  // Confirmation dialog helpers
+  function showConfirm(message: string, onConfirm: () => void) {
+    confirmMessage = message
+    confirmCallback = onConfirm
+    showConfirmDialog = true
+  }
+
+  function handleConfirm() {
+    if (confirmCallback) {
+      confirmCallback()
+    }
+    showConfirmDialog = false
+    confirmCallback = null
+  }
+
+  function handleCancelConfirm() {
+    showConfirmDialog = false
+    confirmCallback = null
+  }
+
   // Handle modal title input with real-time sync
   function handleModalTitleInput(value: string) {
     modalTitle = value
@@ -1047,6 +1505,89 @@
       const cardMetadata = sheet.cardsMetadata.get(modalCardId)
       if (cardMetadata) {
         sheet.cardsMetadata.set(modalCardId, { ...cardMetadata, title: value })
+      }
+    }
+  }
+
+  // Handle attachment upload
+  async function handleAttachmentUpload(e: Event) {
+    const target = e.target as HTMLInputElement
+    const file = target.files?.[0]
+    if (!file || !modalCardId) return
+
+    try {
+      // Create FormData for upload
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('cardId', modalCardId)
+
+      // Upload to backend (which will store in GCS)
+      const response = await fetch(`${API_URL}/api/attachments/upload`, {
+        method: 'POST',
+        body: formData
+      })
+
+      if (response.ok) {
+        const attachment = await response.json()
+        // Add to attachments list
+        attachments = [...attachments, attachment]
+
+        // Sync to Yjs
+        if (sheet) {
+          const cardMeta = sheet.cardsMetadata.get(modalCardId)
+          if (cardMeta) {
+            const updatedAttachments = [...(cardMeta.attachments || []), attachment]
+            sheet.cardsMetadata.set(modalCardId, { ...cardMeta, attachments: updatedAttachments })
+          }
+        }
+      } else {
+        console.error('Failed to upload attachment:', await response.text())
+      }
+    } catch (error) {
+      console.error('Error uploading attachment:', error)
+    }
+
+    // Reset input
+    target.value = ''
+  }
+
+  // Delete attachment
+  async function deleteAttachment(attachmentId: string) {
+    if (!modalCardId) return
+
+    try {
+      const response = await fetch(`${API_URL}/api/attachments/${attachmentId}`, {
+        method: 'DELETE'
+      })
+
+      if (response.ok) {
+        // Remove from local state
+        attachments = attachments.filter(a => a.id !== attachmentId)
+
+        // Sync to Yjs
+        if (sheet) {
+          const cardMeta = sheet.cardsMetadata.get(modalCardId)
+          if (cardMeta) {
+            const updatedAttachments = (cardMeta.attachments || []).filter((a: any) => a.id !== attachmentId)
+            sheet.cardsMetadata.set(modalCardId, { ...cardMeta, attachments: updatedAttachments })
+          }
+        }
+      } else {
+        console.error('Failed to delete attachment:', await response.text())
+      }
+    } catch (error) {
+      console.error('Error deleting attachment:', error)
+    }
+  }
+
+  // Sync horizontal scroll between frozen row and columns container
+  function syncColumnsScroll(e: Event) {
+    if (frozenRowRef && columnsContainerRef) {
+      const target = e.target as HTMLElement
+      if (target === columnsContainerRef) {
+        frozenRowRef.scrollLeft = columnsContainerRef.scrollLeft
+      } else if (target === frozenRowRef) {
+        columnsContainerRef.scrollLeft = frozenRowRef.scrollLeft
       }
     }
   }
@@ -1286,9 +1827,18 @@
   {:else}
     <div class="sheet-view">
       <!-- Frozen header row with shot titles -->
-      <div class="frozen-row" style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px">
-        {#each cols as colId (colId)}
-          <div class="shot-column" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px">
+      <div
+        bind:this={frozenRowRef}
+        class="frozen-row"
+        style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px"
+        onscroll={syncColumnsScroll}
+      >
+        {#each cols as colId, colIndex (colId)}
+          <!-- Column drop indicator -->
+          {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
+            <div class="column-drop-indicator"></div>
+          {/if}
+          <div class="shot-column {draggedColumn === colId ? 'column-dragging' : ''}" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px">
             <!-- Title and icons on same line -->
             <div class="shot-header-title">
               <input
@@ -1299,6 +1849,9 @@
                 onchange={(e) => handleShotTitleChange(colId, e.currentTarget.value)}
               />
               <div class="shot-header-icons">
+                <button class="icon-btn-header" title="Duplicate column" onclick={() => duplicateColumn(colId)}>
+                  <span class="material-symbols-outlined">content_copy</span>
+                </button>
                 <button class="icon-btn-header" title="Add comment">
                   <span class="material-symbols-outlined">comment</span>
                 </button>
@@ -1318,20 +1871,28 @@
 
               {#if card}
                 <div
-                  class="shot-card"
+                  class="shot-card column-drag-handle"
                   style="background-color: {card.color}; width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
                   draggable="true"
-                  ondragstart={(e) => handleDragStart(e, firstRowId, colId, cardId)}
+                  ondragstart={(e) => handleColumnDragStart(e, colId)}
+                  ondragover={(e) => handleColumnDragOver(e, colId)}
+                  ondrop={(e) => handleColumnDrop(e, colId)}
+                  ondragend={resetColumnDrag}
                   ondblclick={() => handleCardDoubleClick(cardId)}
                 >
-                  <input
-                    type="text"
-                    class="shot-title-input card-title-input"
-                    value={card.title}
-                    oninput={(e) => handleCardTitleInput(cardId, e.currentTarget.value)}
-                    onchange={(e) => handleCardTitleChange(cardId, e.currentTarget.value)}
-                    onclick={(e) => e.stopPropagation()}
-                  />
+                  <div class="card-title-container">
+                    {#if card.number}
+                      <span class="card-number">{card.number}</span>
+                    {/if}
+                    <input
+                      type="text"
+                      class="shot-title-input card-title-input"
+                      value={card.title}
+                      oninput={(e) => handleCardTitleInput(cardId, e.currentTarget.value)}
+                      onchange={(e) => handleCardTitleChange(cardId, e.currentTarget.value)}
+                      onclick={(e) => e.stopPropagation()}
+                    />
+                  </div>
                   <button
                     class="btn-delete"
                     onclick={(e) => {
@@ -1345,13 +1906,28 @@
               {/if}
             {/if}
           </div>
+
+          <!-- Column drop indicator after -->
+          {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
+            <div class="column-drop-indicator"></div>
+          {/if}
         {/each}
       </div>
 
       <!-- Scrollable columns area -->
-      <div class="columns-container" style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px">
-        {#each cols as colId (colId)}
-          <div class="column" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035}px">
+      <div
+        bind:this={columnsContainerRef}
+        class="columns-container"
+        style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px"
+        onscroll={syncColumnsScroll}
+      >
+        {#each cols as colId, colIndex (colId)}
+          <!-- Column drop indicator before -->
+          {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
+            <div class="column-drop-indicator"></div>
+          {/if}
+
+          <div class="column {draggedColumn === colId ? 'column-dragging' : ''}" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035}px">
             <!-- Get all cards in this column (skip first row) -->
             {#each rows.slice(1) as rowId (rowId)}
               {@const cellKey = `${rowId}:${colId}`}
@@ -1375,14 +1951,19 @@
                   ondragend={(e) => handleDragEnd(e)}
                   ondblclick={() => handleCardDoubleClick(cardId)}
                 >
-                  <input
-                    type="text"
-                    class="shot-title-input card-title-input"
-                    value={card.title}
-                    oninput={(e) => handleCardTitleInput(cardId, e.currentTarget.value)}
-                    onchange={(e) => handleCardTitleChange(cardId, e.currentTarget.value)}
-                    onclick={(e) => e.stopPropagation()}
-                  />
+                  <div class="card-title-container">
+                    {#if card.number}
+                      <span class="card-number">{card.number}</span>
+                    {/if}
+                    <input
+                      type="text"
+                      class="shot-title-input card-title-input"
+                      value={card.title}
+                      oninput={(e) => handleCardTitleInput(cardId, e.currentTarget.value)}
+                      onchange={(e) => handleCardTitleChange(cardId, e.currentTarget.value)}
+                      onclick={(e) => e.stopPropagation()}
+                    />
+                  </div>
                   <button
                     class="btn-delete"
                     onclick={(e) => {
@@ -1401,14 +1982,17 @@
               {/if}
             {/each}
           </div>
+
+          <!-- Column drop indicator after -->
+          {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
+            <div class="column-drop-indicator"></div>
+          {/if}
         {/each}
       </div>
     </div>
   {/if}
-    </main>
-  </div>
 
-  <!-- Modal Overlay -->
+  <!-- Modal Overlay (inside content area) -->
   {#if showModal}
     <div class="modal-overlay" onclick={closeModal}>
       <div class="modal-content-large" onclick={(e) => e.stopPropagation()}>
@@ -1482,7 +2066,6 @@
         <!-- Right side: Edit controls -->
         <div class="modal-right">
           <div class="modal-header">
-            <h2 class="modal-section-title">Image Tools</h2>
             <button class="modal-close-btn" onclick={closeModal}>×</button>
           </div>
 
@@ -1506,13 +2089,44 @@
             </div>
 
             <div class="modal-field">
-              <label class="modal-label">Prompt</label>
+              <div class="prompt-header">
+                <label class="modal-label">Prompt</label>
+                <button class="format-json-btn" title="Format as JSON" onclick={formatPromptAsJSON}>
+                  <span class="material-symbols-outlined">data_object</span>
+                </button>
+              </div>
               <textarea
+                bind:this={promptTextRef}
                 class="modal-textarea"
-                bind:value={modalPrompt}
+                value={modalPrompt}
                 placeholder="Add a rowing oar"
-                rows="6"
+                rows="8"
               ></textarea>
+            </div>
+
+            <div class="modal-field">
+              <label class="modal-label">Attachments</label>
+              <div class="attachments-gallery">
+                <!-- Upload button -->
+                <label class="attachment-upload-btn" title="Upload attachment">
+                  <span class="material-symbols-outlined">add_photo_alternate</span>
+                  <input type="file" accept="image/*" style="display: none;" onchange={handleAttachmentUpload} />
+                </label>
+
+                <!-- Attachment thumbnails -->
+                {#each attachments as attachment}
+                  <div class="attachment-thumbnail">
+                    <img src={attachment.thumbnailUrl} alt={attachment.name} />
+                    <button
+                      class="attachment-delete-btn"
+                      title="Delete attachment"
+                      onclick={() => deleteAttachment(attachment.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                {/each}
+              </div>
             </div>
           </div>
 
@@ -1528,6 +2142,26 @@
       </div>
     </div>
   {/if}
+
+  <!-- Confirmation Dialog -->
+  {#if showConfirmDialog}
+    <div class="confirm-overlay" onclick={handleCancelConfirm}>
+      <div class="confirm-dialog" onclick={(e) => e.stopPropagation()}>
+        <div class="confirm-message">{confirmMessage}</div>
+        <div class="confirm-buttons">
+          <button class="confirm-btn confirm-btn-cancel" onclick={handleCancelConfirm}>
+            Cancel
+          </button>
+          <button class="confirm-btn confirm-btn-delete" onclick={handleConfirm}>
+            Delete
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+    </main>
+  </div>
 </div>
 
 <style>
@@ -1851,6 +2485,7 @@
     padding: 1.5rem;
     display: flex;
     flex-direction: column;
+    position: relative;
   }
 
   .btn-small {
@@ -1922,12 +2557,64 @@
     padding-bottom: 2.5rem;
     border-bottom: 2px solid rgba(255, 255, 255, 0.15);
     margin-bottom: 2.5rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge */
+  }
+
+  .frozen-row::-webkit-scrollbar {
+    display: none; /* Chrome/Safari/Opera */
   }
 
   .shot-column {
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+  }
+
+  .shot-column.column-dragging {
+    opacity: 0.5;
+  }
+
+  /* Ghost the frozen row card being dragged */
+  .shot-column.column-dragging .shot-card {
+    opacity: 0.7;
+    transform: scale(0.98);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .column.column-dragging {
+    opacity: 0.5;
+  }
+
+  /* Ghost all cards in the dragged column */
+  .column.column-dragging .shot-card {
+    opacity: 0.7;
+    transform: scale(0.98);
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .column-drop-indicator {
+    width: 4px;
+    min-width: 4px;
+    background: rgba(100, 150, 255, 0.8);
+    border-radius: 2px;
+    box-shadow: 0 0 8px rgba(100, 150, 255, 0.6);
+    align-self: stretch;
+    animation: pulse 0.6s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% {
+      opacity: 0.6;
+    }
+    50% {
+      opacity: 1;
+    }
   }
 
   .shot-header-title {
@@ -1995,6 +2682,23 @@
     background: rgba(0, 0, 0, 0.5);
     border-color: rgba(100, 100, 255, 0.6);
     color: rgba(255, 255, 255, 1);
+  }
+
+  .card-title-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    width: 100%;
+  }
+
+  .card-number {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.6);
+    flex-shrink: 0;
+    min-width: 1.5rem;
+    text-align: right;
   }
 
   .shot-header-icons {
@@ -2087,6 +2791,7 @@
   .column {
     display: flex;
     flex-direction: column;
+    transition: opacity 0.2s ease, transform 0.2s ease;
   }
 
   /* Shot Card (Image placeholder) */
@@ -2138,7 +2843,7 @@
 
   /* Modal Styles */
   .modal-overlay {
-    position: fixed;
+    position: absolute;
     top: 0;
     left: 0;
     right: 0;
@@ -2216,19 +2921,20 @@
   }
 
   .modal-card-preview {
-    flex: 1;
+    width: 100%;
     border-radius: 8px;
     position: relative;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-height: 0;
     overflow: hidden;
+    aspect-ratio: 16 / 9;
   }
 
   .sketch-canvas {
     width: 100%;
     height: 100%;
+    object-fit: contain;
     cursor: crosshair;
     border-radius: 8px;
   }
@@ -2333,9 +3039,9 @@
 
   .modal-header {
     display: flex;
-    justify-content: space-between;
+    justify-content: flex-end;
     align-items: center;
-    margin-bottom: 1rem;
+    margin-bottom: 0.5rem;
   }
 
   .modal-close-btn {
@@ -2381,6 +3087,38 @@
     font-size: 0.875rem;
     font-weight: 500;
     color: rgba(255, 255, 255, 0.7);
+  }
+
+  .prompt-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .format-json-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.5);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .format-json-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.25);
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .format-json-btn .material-symbols-outlined {
+    font-size: 18px;
   }
 
   .modal-input {
@@ -2440,8 +3178,9 @@
     border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 8px;
     color: rgba(255, 255, 255, 0.95);
-    font-size: 0.95rem;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    font-size: 0.875rem;
+    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+    line-height: 1.5;
     resize: vertical;
     outline: none;
     transition: all 0.2s;
@@ -2455,6 +3194,86 @@
 
   .modal-textarea::placeholder {
     color: rgba(255, 255, 255, 0.3);
+  }
+
+  .attachments-gallery {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    padding: 0.5rem;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    min-height: 80px;
+  }
+
+  .attachment-upload-btn {
+    width: 64px;
+    height: 64px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px dashed rgba(255, 255, 255, 0.2);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+    color: rgba(255, 255, 255, 0.4);
+  }
+
+  .attachment-upload-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.3);
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .attachment-upload-btn .material-symbols-outlined {
+    font-size: 24px;
+  }
+
+  .attachment-thumbnail {
+    position: relative;
+    width: 64px;
+    height: 64px;
+    border-radius: 6px;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+  }
+
+  .attachment-thumbnail img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .attachment-delete-btn {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.7);
+    border: none;
+    border-radius: 50%;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+  }
+
+  .attachment-thumbnail:hover .attachment-delete-btn {
+    opacity: 1;
+  }
+
+  .attachment-delete-btn:hover {
+    background: rgba(255, 50, 50, 0.9);
   }
 
   .modal-actions {
@@ -2505,5 +3324,88 @@
   .modal-btn-save:hover {
     transform: translateY(-1px);
     box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+  }
+
+  /* Confirmation Dialog */
+  .confirm-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 20000;
+    animation: fadeIn 0.2s ease;
+  }
+
+  .confirm-dialog {
+    background: rgba(20, 20, 20, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 12px;
+    padding: 1.5rem;
+    max-width: 400px;
+    width: 90%;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    animation: slideUp 0.2s ease;
+  }
+
+  .confirm-message {
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.95rem;
+    line-height: 1.5;
+    margin-bottom: 1.5rem;
+    white-space: pre-line;
+  }
+
+  .confirm-buttons {
+    display: flex;
+    gap: 0.75rem;
+    justify-content: flex-end;
+  }
+
+  .confirm-btn {
+    padding: 0.6rem 1.25rem;
+    border-radius: 8px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    border: none;
+  }
+
+  .confirm-btn-cancel {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  .confirm-btn-cancel:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 0.95);
+  }
+
+  .confirm-btn-delete {
+    background: rgba(239, 68, 68, 0.9);
+    color: white;
+  }
+
+  .confirm-btn-delete:hover {
+    background: rgba(239, 68, 68, 1);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(239, 68, 68, 0.4);
+  }
+
+  @keyframes slideUp {
+    from {
+      transform: translateY(20px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
   }
 </style>
