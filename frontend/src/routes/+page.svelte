@@ -1758,9 +1758,18 @@
     // Set URLs at runtime in the browser
     const isProduction = window.location.hostname !== 'localhost'
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+
+    console.log('[Environment Detection]', {
+      hostname: window.location.hostname,
+      isProduction,
+      protocol: window.location.protocol,
+      wsProtocol: protocol
+    })
+
     WS_URL = import.meta.env.VITE_YWS as string || (isProduction ? `${protocol}//${window.location.host}/yjs` : 'ws://localhost:8000/yjs')
     API_URL = import.meta.env.VITE_API_URL as string || (isProduction ? `${window.location.protocol}//${window.location.host}` : 'http://localhost:8000')
 
+    console.log('[URLs Set]', { WS_URL, API_URL })
     console.log('Connecting to WebSocket:', WS_URL, 'Sheet ID:', SHEET_ID)
 
     // Add keyboard event listener
