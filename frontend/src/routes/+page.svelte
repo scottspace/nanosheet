@@ -1763,11 +1763,19 @@
       hostname: window.location.hostname,
       isProduction,
       protocol: window.location.protocol,
-      wsProtocol: protocol
+      wsProtocol: protocol,
+      envVars: {
+        VITE_YWS: import.meta.env.VITE_YWS,
+        VITE_API_URL: import.meta.env.VITE_API_URL
+      }
     })
 
-    WS_URL = import.meta.env.VITE_YWS as string || (isProduction ? `${protocol}//${window.location.host}/yjs` : 'ws://localhost:8000/yjs')
-    API_URL = import.meta.env.VITE_API_URL as string || (isProduction ? `${window.location.protocol}//${window.location.host}` : 'http://localhost:8000')
+    // Only use environment variables if they're actually set (not undefined or empty)
+    const envWsUrl = import.meta.env.VITE_YWS as string
+    const envApiUrl = import.meta.env.VITE_API_URL as string
+
+    WS_URL = (envWsUrl && envWsUrl.trim()) || (isProduction ? `${protocol}//${window.location.host}/yjs` : 'ws://localhost:8000/yjs')
+    API_URL = (envApiUrl && envApiUrl.trim()) || (isProduction ? `${window.location.protocol}//${window.location.host}` : 'http://localhost:8000')
 
     console.log('[URLs Set]', { WS_URL, API_URL })
     console.log('Connecting to WebSocket:', WS_URL, 'Sheet ID:', SHEET_ID)
