@@ -15,14 +15,32 @@
     getAllCardIds
   } from '../lib/ySheet'
 
-  // Auto-detect production vs development environment
-  const isProduction = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
-  const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const baseUrl = isProduction ? `${window.location.protocol}//${window.location.host}` : 'http://localhost:8000'
-  const wsBaseUrl = isProduction ? `${protocol}//${window.location.host}` : 'ws://localhost:8000'
+  // Auto-detect production vs development environment (runtime detection)
+  function getWsUrl(): string {
+    if (import.meta.env.VITE_YWS) return import.meta.env.VITE_YWS
+    if (typeof window === 'undefined') return 'ws://localhost:8000/yjs'
 
-  const WS_URL = import.meta.env.VITE_YWS || `${wsBaseUrl}/yjs`
-  const API_URL = import.meta.env.VITE_API_URL || baseUrl
+    const isProduction = window.location.hostname !== 'localhost'
+    if (isProduction) {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      return `${protocol}//${window.location.host}/yjs`
+    }
+    return 'ws://localhost:8000/yjs'
+  }
+
+  function getApiUrl(): string {
+    if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL
+    if (typeof window === 'undefined') return 'http://localhost:8000'
+
+    const isProduction = window.location.hostname !== 'localhost'
+    if (isProduction) {
+      return `${window.location.protocol}//${window.location.host}`
+    }
+    return 'http://localhost:8000'
+  }
+
+  const WS_URL = getWsUrl()
+  const API_URL = getApiUrl()
   const SHEET_ID = 'test-sheet-1'  // Persistent sheet for testing
 
   // Generate a unique user ID for this session
