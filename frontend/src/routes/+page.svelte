@@ -15,8 +15,14 @@
     getAllCardIds
   } from '../lib/ySheet'
 
-  const WS_URL = import.meta.env.VITE_YWS || 'ws://localhost:8000/yjs'
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+  // Auto-detect production vs development environment
+  const isProduction = typeof window !== 'undefined' && window.location.hostname !== 'localhost'
+  const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const baseUrl = isProduction ? `${window.location.protocol}//${window.location.host}` : 'http://localhost:8000'
+  const wsBaseUrl = isProduction ? `${protocol}//${window.location.host}` : 'ws://localhost:8000'
+
+  const WS_URL = import.meta.env.VITE_YWS || `${wsBaseUrl}/yjs`
+  const API_URL = import.meta.env.VITE_API_URL || baseUrl
   const SHEET_ID = 'test-sheet-1'  // Persistent sheet for testing
 
   // Generate a unique user ID for this session

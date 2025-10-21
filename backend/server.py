@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from typing import Any
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from ypy_websocket import ASGIServer, WebsocketServer, YRoom
 from y_py import YDoc
 from dotenv import load_dotenv
@@ -206,20 +208,51 @@ app.mount("/yjs", safe_asgi_server)
 app.include_router(cards_router)
 
 
-@app.get("/")
-async def root():
-    """Health check endpoint."""
-    return {
-        "service": "nanosheet",
-        "version": "0.1.0",
-        "gcs_bucket": GCS_BUCKET or "not configured"
-    }
-
-
-@app.get("/health")
+@app.get("/api/health")
 async def health():
     """Health check endpoint."""
     return {"status": "healthy"}
+
+
+@app.get("/health")
+async def health_alt():
+    """Alternative health check endpoint for Fly.io."""
+    return {"status": "healthy"}
+
+
+# Mount static files
+static_dir = Path(__file__).parent / "static"
+if static_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(static_dir / "assets")), name="assets")
+
+    @app.get("/")
+    async def serve_frontend():
+        """Serve the frontend index.html."""
+        return FileResponse(str(static_dir / "index.html"))
+
+    @app.get("/{full_path:path}")
+    async def catch_all(full_path: str):
+        """Catch all route to serve frontend for client-side routing."""
+        # Check if it's an API or WebSocket route
+        if full_path.startswith(("api/", "yjs/", "health")):
+            return {"error": "Not found"}, 404
+
+        # Try to serve static file
+        file_path = static_dir / full_path
+        if file_path.exists() and file_path.is_file():
+            return FileResponse(str(file_path))
+
+        # Otherwise serve index.html for SPA routing
+        return FileResponse(str(static_dir / "index.html"))
+else:
+    @app.get("/")
+    async def root():
+        """API info when static files not available."""
+        return {
+            "service": "nanosheet",
+            "version": "0.1.0",
+            "gcs_bucket": GCS_BUCKET or "not configured"
+        }
 
 
 if __name__ == "__main__":
