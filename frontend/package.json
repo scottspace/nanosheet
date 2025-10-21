@@ -1,0 +1,20 @@
+{
+  "name": "nanosheet-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "svelte": "^5.17.3",
+    "vite": "^6.0.7"
+  },
+  "dependencies": {
+    "y-websocket": "^2.0.4",
+    "yjs": "^13.6.23"
+  }
+}

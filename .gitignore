@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# Node
+node_modules/
+dist/
+.svelte-kit/
+build/
+
+# Environment
+.env
+.env.local
+
+# Credentials
+gcp-service-account-key.json
+*-service-account-*.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

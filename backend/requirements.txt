@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+ypy-websocket
+y-py
+google-cloud-storage
+google-cloud-datastore
+ulid-py

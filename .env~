@@ -1,0 +1,5 @@
+YJS_GCS_BUCKET=es-nanosheet
+GOOGLE_APPLICATION_CREDENTIALS=/Users/scottpenberthy/work/es/nanosheet/gcp-service-account-key.json
+PORT=8000
+VITE_YWS=ws://localhost:8000/yjs
+VITE_API_URL=http://localhost:8000

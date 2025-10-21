@@ -1,0 +1,979 @@
+<script lang="ts">
+  import { onMount, onDestroy } from 'svelte'
+  import type { SheetConnection } from '../lib/ySheet'
+  import {
+    connectSheet,
+    addRow,
+    addCol,
+    addCard,
+    moveCard,
+    deleteCard,
+    copyRow,
+    copyCol,
+    getAllCardIds
+  } from '../lib/ySheet'
+
+  const WS_URL = import.meta.env.VITE_YWS || 'ws://localhost:8000/yjs'
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+  const SHEET_ID = 'test-sheet-1'  // Persistent sheet for testing
+
+  let sheet: SheetConnection | null = null
+  let rows: string[] = $state([])
+  let cols: string[] = $state([])
+  let cellsMap: Map<string, { cardId: string }> = $state(new Map())
+  let cardsMetadata: Map<string, any> = $state(new Map())
+  let loading = $state(true)
+  let draggedCard: { rowId: string; colId: string; cardId: string } | null = null
+
+  // Thumbnail sizes (8 presets in exact 16:9 aspect ratio)
+  const THUMBNAIL_SIZES = [
+    { label: '160 × 90', width: 160, height: 90 },      // 160/9*16 = 90
+    { label: '192 × 108', width: 192, height: 108 },    // 192/9*16 = 108
+    { label: '224 × 126', width: 224, height: 126 },    // 224/9*16 = 126
+    { label: '256 × 144', width: 256, height: 144 },    // 256/9*16 = 144
+    { label: '288 × 162', width: 288, height: 162 },    // 288/9*16 = 162
+    { label: '320 × 180', width: 320, height: 180 },    // 320/9*16 = 180
+    { label: '384 × 216', width: 384, height: 216 },    // 384/9*16 = 216
+    { label: '448 × 252', width: 448, height: 252 },    // 448/9*16 = 252
+  ]
+  let selectedThumbnailSize = $state(3) // Default to 280x158 (index 3)
+  let showThumbnailMenu = $state(false)
+
+  // Undo stack - stores operations that can be undone
+  interface UndoOperation {
+    type: 'delete'
+    rowId: string
+    colId: string
+    cardId: string
+  }
+  let undoStack: UndoOperation[] = $state([])
+
+  // API helpers
+  async function fetchCards(cardIds: string[]): Promise<any[]> {
+    if (cardIds.length === 0) return []
+    const response = await fetch(`${API_URL}/api/cards/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cardIds })
+    })
+    if (!response.ok) throw new Error('Failed to fetch cards')
+    return response.json()
+  }
+
+  // Call backend API to regenerate the sheet
+  async function regenerateSheet() {
+    console.log('[regenerateSheet] Calling backend API...')
+    const response = await fetch(`${API_URL}/api/sheets/${SHEET_ID}/regenerate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    })
+    if (!response.ok) {
+      throw new Error('Failed to regenerate sheet')
+    }
+    const result = await response.json()
+    console.log('[regenerateSheet] Result:', result)
+    return result
+  }
+
+  // Debounce timer for fetching cards
+  let fetchCardsTimeout: number | null = null
+
+  // Update local state from Yjs
+  function updateFromYjs(event?: any) {
+    if (!sheet) return
+
+    const eventType = event ? `with event (${event.constructor.name})` : 'manually'
+    console.log(`[updateFromYjs] called ${eventType}`)
+
+    rows = sheet.rowOrder.toArray()
+    cols = sheet.colOrder.toArray()
+
+    const newCellsMap = new Map()
+    sheet.cells.forEach((value, key) => {
+      newCellsMap.set(key, value)
+    })
+    cellsMap = newCellsMap
+
+    console.log(`[updateFromYjs] Updated: ${rows.length} rows, ${cols.length} cols, ${cellsMap.size} cells`)
+    console.log(`[updateFromYjs] Provider synced: ${sheet.provider.synced}, WS connected: ${sheet.provider.wsconnected}`)
+
+    // Debounce card fetching to avoid redundant requests
+    if (fetchCardsTimeout) {
+      clearTimeout(fetchCardsTimeout)
+    }
+
+    fetchCardsTimeout = setTimeout(() => {
+      const cardIds = getAllCardIds(sheet)
+
+      // Only fetch cards we don't already have
+      const missingCardIds = cardIds.filter(id => !cardsMetadata.has(id))
+
+      if (missingCardIds.length > 0) {
+        fetchCards(missingCardIds).then(cards => {
+          const newCardsMetadata = new Map(cardsMetadata)
+          cards.forEach(card => {
+            newCardsMetadata.set(card.cardId, card)
+          })
+          cardsMetadata = newCardsMetadata
+        })
+      }
+    }, 100) as unknown as number
+  }
+
+  // Regenerate all cards in the sheet
+  async function handleRegenerate() {
+    console.log('[handleRegenerate] Starting...')
+
+    // Clear local card metadata cache
+    cardsMetadata = new Map()
+
+    // Call backend API to regenerate
+    await regenerateSheet()
+
+    console.log('[handleRegenerate] Complete - Yjs will sync the new data')
+  }
+
+  // Handlers
+  function handleAddRow() {
+    if (!sheet) return
+    addRow(sheet)
+  }
+
+  function handleAddColumn() {
+    if (!sheet) return
+    addCol(sheet)
+  }
+
+  function handleCopyRow(rowId: string) {
+    if (!sheet) return
+    copyRow(sheet, rowId)
+  }
+
+  function handleCopyColumn(colId: string) {
+    if (!sheet) return
+    copyCol(sheet, colId)
+  }
+
+  function handleDeleteCard(rowId: string, colId: string) {
+    if (!sheet) return
+
+    // Save to undo stack before deleting
+    const cellKey = `${rowId}:${colId}`
+    const cell = cellsMap.get(cellKey)
+    if (cell && cell.cardId) {
+      undoStack.push({
+        type: 'delete',
+        rowId,
+        colId,
+        cardId: cell.cardId
+      })
+      console.log('[handleDeleteCard] Saved to undo stack:', undoStack.length)
+    }
+
+    deleteCard(sheet, rowId, colId)
+  }
+
+  // Undo the last operation
+  function handleUndo() {
+    if (!sheet || undoStack.length === 0) {
+      console.log('[handleUndo] Nothing to undo')
+      return
+    }
+
+    const operation = undoStack.pop()
+    console.log('[handleUndo] Undoing operation:', operation)
+
+    if (operation.type === 'delete') {
+      // Re-add the card to the cell
+      const cellKey = `${operation.rowId}:${operation.colId}`
+      sheet.cells.set(cellKey, { cardId: operation.cardId })
+      console.log('[handleUndo] Restored card to', cellKey)
+    }
+  }
+
+  // Drag & Drop handlers
+  function handleDragStart(event: DragEvent, rowId: string, colId: string, cardId: string) {
+    draggedCard = { rowId, colId, cardId }
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move'
+    }
+  }
+
+  function handleDragOver(event: DragEvent) {
+    event.preventDefault()
+    if (event.dataTransfer) {
+      event.dataTransfer.dropEffect = 'move'
+    }
+  }
+
+  function handleDrop(event: DragEvent, toRow: string, toCol: string) {
+    event.preventDefault()
+    if (!sheet || !draggedCard) return
+
+    const { rowId: fromRow, colId: fromCol } = draggedCard
+
+    // Don't do anything if dropped on same cell
+    if (fromRow === toRow && fromCol === toCol) {
+      draggedCard = null
+      return
+    }
+
+    // Move the card
+    moveCard(sheet, fromRow, fromCol, toRow, toCol)
+    draggedCard = null
+  }
+
+  // Keyboard event handler for undo
+  function handleKeydown(event: KeyboardEvent) {
+    // Check for Cmd+Z (Mac) or Ctrl+Z (Windows/Linux)
+    if ((event.metaKey || event.ctrlKey) && event.key === 'z') {
+      event.preventDefault()
+      handleUndo()
+    }
+  }
+
+  // Toggle thumbnail size menu
+  function toggleThumbnailMenu() {
+    showThumbnailMenu = !showThumbnailMenu
+  }
+
+  // Select a thumbnail size
+  function selectThumbnailSize(index: number) {
+    selectedThumbnailSize = index
+    showThumbnailMenu = false
+  }
+
+  // Close thumbnail menu when clicking outside
+  function handleClickOutside(event: MouseEvent) {
+    if (showThumbnailMenu) {
+      const target = event.target as HTMLElement
+      if (!target.closest('.btn-toolbar-dropdown')) {
+        showThumbnailMenu = false
+      }
+    }
+  }
+
+  // Mount/unmount
+  onMount(async () => {
+    console.log('Connecting to WebSocket:', WS_URL, 'Sheet ID:', SHEET_ID)
+
+    // Add keyboard event listener
+    window.addEventListener('keydown', handleKeydown)
+
+    // Add click listener for closing dropdown
+    window.addEventListener('click', handleClickOutside)
+
+    try {
+      sheet = connectSheet(WS_URL, SHEET_ID)
+
+      console.log('Sheet connected:', sheet)
+
+      // Observe changes
+      sheet.rowOrder.observe((event) => {
+        console.log('[rowOrder observer] Change detected')
+        updateFromYjs(event)
+      })
+      sheet.colOrder.observe((event) => {
+        console.log('[colOrder observer] Change detected')
+        updateFromYjs(event)
+      })
+      sheet.cells.observe((event) => {
+        console.log('[cells observer] Change detected')
+        updateFromYjs(event)
+      })
+
+      // Listen for connection status
+      sheet.provider.on('status', (event: any) => {
+        console.log('[WebSocket] Status:', event.status)
+      })
+
+      // Listen for when provider connects/disconnects
+      sheet.provider.on('connection-close', (event: any) => {
+        console.log('[WebSocket] Connection closed:', event)
+      })
+
+      sheet.provider.on('connection-error', (event: any) => {
+        console.error('[WebSocket] Connection error:', event)
+      })
+
+      // Wait for initial sync
+      sheet.provider.on('sync', async (synced: boolean) => {
+        console.log('[sync event] Synced:', synced)
+        if (synced) {
+          // Wait a bit to let initial data propagate from other clients
+          await new Promise(resolve => setTimeout(resolve, 200))
+
+          updateFromYjs()
+
+          console.log(`[sync event] Sheet has ${sheet.rowOrder.length} rows, ${sheet.colOrder.length} cols, ${sheet.cells.size} cells`)
+
+          loading = false
+        }
+      })
+
+      // Fallback timeout check (in case sync event doesn't fire)
+      setTimeout(async () => {
+        console.log('[fallback timeout] Checking initial state')
+        console.log(`[fallback timeout] Provider synced: ${sheet.provider.synced}`)
+        console.log(`[fallback timeout] Yjs state: rowOrder=${sheet.rowOrder.length}, colOrder=${sheet.colOrder.length}, cells=${sheet.cells.size}`)
+
+        updateFromYjs()
+        loading = false
+      }, 2000)
+
+    } catch (error) {
+      console.error('Error connecting to sheet:', error)
+      loading = false
+    }
+  })
+
+  onDestroy(() => {
+    // Remove keyboard event listener
+    window.removeEventListener('keydown', handleKeydown)
+    window.removeEventListener('click', handleClickOutside)
+
+    if (sheet) {
+      sheet.provider.destroy()
+      sheet.doc.destroy()
+    }
+  })
+</script>
+
+<div class="app-container">
+  <!-- Top Toolbar -->
+  <div class="toolbar">
+    <div class="toolbar-left">
+      <span class="app-title">Storyboard</span>
+
+      <div class="toolbar-divider"></div>
+
+      <button class="icon-btn" title="Undo" onclick={handleUndo}>
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M8 4L4 8L8 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 8H14C15.1046 8 16 8.89543 16 10V12C16 13.1046 15.1046 14 14 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+      <button class="icon-btn" title="Redo">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M12 4L16 8L12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M16 8H6C4.89543 8 4 8.89543 4 10V12C4 13.1046 4.89543 14 6 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="toolbar-right">
+      <button class="btn-toolbar">Archive</button>
+
+      <div class="thumbnail-dropdown">
+        <button class="btn-size-display" onclick={toggleThumbnailMenu}>
+          {THUMBNAIL_SIZES[selectedThumbnailSize].label}
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style="margin-left: 4px;">
+            <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+
+        {#if showThumbnailMenu}
+          <div class="thumbnail-menu">
+            {#each THUMBNAIL_SIZES as size, index}
+              <button
+                class="thumbnail-menu-item"
+                class:selected={selectedThumbnailSize === index}
+                onclick={() => selectThumbnailSize(index)}
+              >
+                {size.label}
+              </button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+
+      <button class="icon-btn" title="Mute/Unmute">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M10 4L6 8H3V12H6L10 16V4Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M14 7C14.6 8 15 9.5 15 10C15 10.5 14.6 12 14 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <button class="icon-btn" title="More options">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <circle cx="10" cy="4" r="1.5" fill="currentColor"/>
+          <circle cx="10" cy="10" r="1.5" fill="currentColor"/>
+          <circle cx="10" cy="16" r="1.5" fill="currentColor"/>
+        </svg>
+      </button>
+
+      <button class="icon-btn" onclick={handleRegenerate} title="Regenerate (Dev)">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+          <path d="M17 10C17 13.866 13.866 17 10 17C6.13401 17 3 13.866 3 10C3 6.13401 6.13401 3 10 3C12.7614 3 15.1355 4.63 16.2686 7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M17 4V7H14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </button>
+
+      <div class="profile-badge">
+        <div class="profile-info">
+          <span class="plan-name">ULTRA</span>
+          <div class="profile-pic">SP</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="main-layout">
+    <!-- Left Sidebar -->
+    <aside class="sidebar">
+      <div class="project-name">
+        <input type="text" value="Mystic Lake" class="project-name-input" title="Mystic Lake" />
+      </div>
+
+      <nav class="nav-sheets">
+        <button class="nav-item">Film (0)</button>
+        <button class="nav-item">Blocks (0)</button>
+        <button class="nav-item">Scenes (0)</button>
+        <button class="nav-item active">Shots (3)</button>
+        <button class="nav-item">Images (7)</button>
+      </nav>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="content">
+
+  {#if loading}
+    <div class="loading">Loading shots...</div>
+  {:else}
+    <div class="sheet-view">
+      <!-- Frozen header row with shot titles -->
+      <div class="frozen-row" style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px">
+        {#each cols as colId (colId)}
+          <div class="shot-header" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px">
+            <div class="shot-header-top">
+              <input
+                type="text"
+                class="shot-title-input"
+                value="Shot {colId.replace('c-', '').replace('media', '1').replace('alt', '2').replace('notes', '3')}"
+                placeholder="Shot title"
+              />
+              <div class="shot-header-icons">
+                <button class="icon-btn-header" title="Add image">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 3V13M3 8H13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                </button>
+                <button class="icon-btn-header" title="Download as ZIP">
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M8 10V3M8 10L5.5 7.5M8 10L10.5 7.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                    <path d="M3 11V12C3 12.5523 3.44772 13 4 13H12C12.5523 13 13 12.5523 13 12V11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+        {/each}
+      </div>
+
+      <!-- Scrollable columns area -->
+      <div class="columns-container" style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px">
+        {#each cols as colId (colId)}
+          <div class="column" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035}px">
+            <!-- Get all cards in this column (from all rows) -->
+            {#each rows as rowId (rowId)}
+              {@const cellKey = `${rowId}:${colId}`}
+              {@const cell = cellsMap.get(cellKey)}
+              {@const cardId = cell?.cardId}
+              {@const card = cardId ? cardsMetadata.get(cardId) : null}
+
+              {#if card}
+                <div
+                  class="shot-card"
+                  style="background-color: {card.color}; width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
+                  draggable="true"
+                  ondragstart={(e) => handleDragStart(e, rowId, colId, cardId)}
+                >
+                  <div class="shot-title">{card.title}</div>
+                  <button
+                    class="btn-delete"
+                    onclick={(e) => {
+                      e.stopPropagation()
+                      handleDeleteCard(rowId, colId)
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              {/if}
+            {/each}
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+    </main>
+  </div>
+</div>
+
+<style>
+  :global(body) {
+    margin: 0;
+    padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #000;
+    color: #e0e0e0;
+    overflow: hidden;
+  }
+
+  .app-container {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: #000;
+  }
+
+  /* Toolbar */
+  .toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 52px;
+    padding: 0 1rem;
+    background: #0a0a0a;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .toolbar-left {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex: 1;
+  }
+
+  .toolbar-right {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .toolbar-divider {
+    width: 1px;
+    height: 24px;
+    background: rgba(255, 255, 255, 0.1);
+    margin: 0 0.25rem;
+  }
+
+  .app-title {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.9);
+    letter-spacing: -0.01em;
+  }
+
+  .icon-btn {
+    width: 36px;
+    height: 36px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.6);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .icon-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  .btn-toolbar {
+    padding: 0.5rem 1rem;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .btn-toolbar:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  .btn-size-display {
+    padding: 0.35rem 0.5rem;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 0.7rem;
+    font-family: 'Monaco', 'Menlo', monospace;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    white-space: nowrap;
+  }
+
+  .btn-size-display:hover {
+    background: rgba(255, 255, 255, 0.05);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  .thumbnail-dropdown {
+    position: relative;
+  }
+
+  .thumbnail-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    min-width: 140px;
+    background: #1a1a1a;
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    padding: 0.25rem;
+    z-index: 1000;
+  }
+
+  .thumbnail-menu-item {
+    width: 100%;
+    padding: 0.5rem 0.75rem;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.75rem;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: 'Monaco', 'Menlo', monospace;
+  }
+
+  .thumbnail-menu-item:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.95);
+  }
+
+  .thumbnail-menu-item.selected {
+    background: rgba(100, 100, 255, 0.2);
+    color: rgba(255, 255, 255, 0.95);
+  }
+
+  .profile-badge {
+    display: flex;
+    align-items: center;
+    margin-left: 0.5rem;
+  }
+
+  .profile-info {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 20px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .profile-info:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.15);
+  }
+
+  .plan-name {
+    font-size: 0.7rem;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.5);
+    letter-spacing: 0.05em;
+  }
+
+  .profile-pic {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 0.75rem;
+    font-weight: 600;
+  }
+
+  /* Main Layout */
+  .main-layout {
+    display: flex;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  /* Sidebar */
+  .sidebar {
+    width: 140px;
+    background: #0a0a0a;
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    display: flex;
+    flex-direction: column;
+    padding: 0.75rem;
+  }
+
+  .project-name {
+    margin-bottom: 1rem;
+    padding-bottom: 0.75rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  }
+
+  .project-name-input {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.8rem;
+    font-weight: 600;
+    outline: none;
+    padding: 0.3rem 0.4rem;
+    border-radius: 4px;
+    transition: all 0.15s;
+  }
+
+  .project-name-input:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .project-name-input:focus {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .icon-btn-small {
+    width: 24px;
+    height: 24px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: rgba(255, 255, 255, 0.4);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .icon-btn-small:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .nav-sheets {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+
+  .nav-item {
+    padding: 0.5rem 0.5rem;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: rgba(255, 255, 255, 0.6);
+    font-size: 0.75rem;
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .nav-item:hover {
+    background: rgba(255, 255, 255, 0.05);
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .nav-item.active {
+    background: rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.95);
+    font-weight: 500;
+  }
+
+  /* Content Area */
+  .content {
+    flex: 1;
+    overflow: auto;
+    background: #000;
+    padding: 1.5rem;
+  }
+
+  .btn-small {
+    padding: 0.35rem 0.65rem;
+    font-size: 0.75rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: rgba(255, 255, 255, 0.9);
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+
+  .btn-small:hover {
+    background: rgba(255, 255, 255, 0.12);
+    transform: translateY(-1px);
+  }
+
+  .btn-delete {
+    position: absolute;
+    top: 8px;
+    left: 8px;
+    padding: 0;
+    width: 26px;
+    height: 26px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(10px);
+    color: white;
+    font-size: 1.3rem;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+
+  .btn-delete:hover {
+    background: rgba(0, 0, 0, 0.85);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .loading {
+    text-align: center;
+    padding: 3rem;
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 1.1rem;
+  }
+
+  /* Sheet View */
+  .sheet-view {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  /* Frozen Row - Shot Headers */
+  .frozen-row {
+    display: flex;
+    gap: 1.5rem;
+    padding-bottom: 2.5rem;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.15);
+    margin-bottom: 2.5rem;
+  }
+
+  .shot-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+
+  .shot-header-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+
+  .shot-title-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.9);
+    font-size: 0.875rem;
+    font-weight: 600;
+    outline: none;
+    padding: 0.35rem 0.5rem;
+    border-radius: 4px;
+    transition: all 0.15s;
+  }
+
+  .shot-title-input:hover {
+    background: rgba(255, 255, 255, 0.03);
+  }
+
+  .shot-title-input:focus {
+    background: rgba(255, 255, 255, 0.06);
+  }
+
+  .shot-header-icons {
+    display: flex;
+    gap: 0.25rem;
+    flex-shrink: 0;
+  }
+
+  .icon-btn-header {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 5px;
+    color: rgba(255, 255, 255, 0.5);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+
+  .icon-btn-header:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.2);
+    color: rgba(255, 255, 255, 0.9);
+  }
+
+  /* Columns Container */
+  .columns-container {
+    display: flex;
+    gap: 1.5rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    flex: 1;
+  }
+
+  .column {
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Shot Card (Image placeholder) */
+  .shot-card {
+    position: relative;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    cursor: grab;
+    transition: all 0.2s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    box-sizing: border-box;
+    flex-shrink: 0;
+  }
+
+  .shot-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.6);
+    border-color: rgba(255, 255, 255, 0.2);
+  }
+
+  .shot-card:active {
+    cursor: grabbing;
+  }
+
+  .shot-title {
+    color: white;
+    font-weight: 500;
+    font-size: 1rem;
+    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    text-align: center;
+    letter-spacing: -0.01em;
+  }
+</style>
