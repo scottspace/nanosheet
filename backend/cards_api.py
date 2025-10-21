@@ -1,11 +1,15 @@
 """Cards API endpoints for creating and fetching card metadata."""
 import logging
 import json
+import io
+import zipfile
 from datetime import datetime, timezone
 from typing import List, Optional
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from google.cloud import datastore, storage
+from PIL import Image, ImageDraw
 import ulid
 import asyncio
 
@@ -532,4 +536,88 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
         import traceback
         logger.error(f"Error regenerating sheet: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/columns/{col_id}/download")
+async def download_column(col_id: str, request: dict):
+    """
+    Download a column as a zip file containing:
+    - cards.json: metadata for all cards in the column
+    - content/: directory with numbered PNG files (1.png, 2.png, etc.)
+
+    Request body should contain:
+    - columnCards: array of card objects in order
+    - columnTitle: title of the column
+    """
+    try:
+        column_cards = request.get("columnCards", [])
+        column_title = request.get("columnTitle", "column")
+
+        if not column_cards:
+            raise HTTPException(status_code=400, detail="No cards provided")
+
+        # Create in-memory zip file
+        zip_buffer = io.BytesIO()
+
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+            # Build cards.json
+            cards_json = []
+            for idx, card in enumerate(column_cards, start=1):
+                cards_json.append({
+                    "id": idx,
+                    "cardId": card.get("cardId"),
+                    "title": card.get("title"),
+                    "color": card.get("color"),
+                    "prompt": card.get("prompt", ""),
+                    "number": card.get("number"),
+                    "source": f"content/{idx}.png"
+                })
+
+            # Write cards.json to zip
+            zip_file.writestr("cards.json", json.dumps(cards_json, indent=2))
+
+            # Generate placeholder images for each card
+            for idx, card in enumerate(column_cards, start=1):
+                # Create 16:9 image (1920x1080)
+                width, height = 1920, 1080
+                color = card.get("color", "#CCCCCC")
+
+                # Convert hex color to RGB
+                color_rgb = tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+
+                # Create image with solid color
+                img = Image.new('RGB', (width, height), color_rgb)
+
+                # Save image to buffer
+                img_buffer = io.BytesIO()
+                img.save(img_buffer, format='PNG')
+                img_buffer.seek(0)
+
+                # Add to zip
+                zip_file.writestr(f"content/{idx}.png", img_buffer.getvalue())
+
+        # Prepare zip for download
+        zip_buffer.seek(0)
+
+        # Sanitize column title for filename
+        safe_title = "".join(c for c in column_title if c.isalnum() or c in (' ', '-', '_')).strip()
+        safe_title = safe_title.replace(' ', '_')
+        if not safe_title:
+            safe_title = "column"
+
+        filename = f"{safe_title}.zip"
+
+        logger.info(f"Generated zip for column {col_id}: {len(column_cards)} cards")
+
+        return StreamingResponse(
+            io.BytesIO(zip_buffer.getvalue()),
+            media_type="application/zip",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating column download: {e}")
         raise HTTPException(status_code=500, detail=str(e))

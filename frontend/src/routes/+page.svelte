@@ -48,6 +48,11 @@
   let confirmMessage = $state('')
   let confirmCallback: (() => void) | null = null
 
+  // Toast notification state
+  let showToast = $state(false)
+  let toastMessage = $state('')
+  let toastTimeout: number | null = null
+
   let showModal = $state(false)
   let modalCardId = $state<string | null>(null)
   let modalMediaId = $state<string | null>(null)  // Specific media/attachment being edited
@@ -1565,6 +1570,32 @@
     confirmCallback = null
   }
 
+  // Toast notification helpers
+  function showToastNotification(message: string, duration: number = 3000) {
+    toastMessage = message
+    showToast = true
+
+    // Clear any existing timeout
+    if (toastTimeout) {
+      clearTimeout(toastTimeout)
+    }
+
+    // Auto-hide after duration (unless duration is 0, which means manual dismiss)
+    if (duration > 0) {
+      toastTimeout = setTimeout(() => {
+        showToast = false
+      }, duration) as unknown as number
+    }
+  }
+
+  function hideToast() {
+    showToast = false
+    if (toastTimeout) {
+      clearTimeout(toastTimeout)
+      toastTimeout = null
+    }
+  }
+
   // Handle modal title input with real-time sync
   function handleModalTitleInput(value: string) {
     modalTitle = value
@@ -1573,6 +1604,67 @@
       if (cardMetadata) {
         sheet.cardsMetadata.set(modalCardId, { ...cardMetadata, title: value })
       }
+    }
+  }
+
+  // Handle column download
+  async function handleColumnDownload(colId: string) {
+    if (!sheet) return
+
+    try {
+      // Get column title
+      const columnTitle = shotTitles.get(colId) || `Shot ${colId}`
+
+      // Get all cards in this column
+      const columnCards = rows.map(rowId => {
+        const cellKey = `${rowId}:${colId}`
+        const cell = cellsMap.get(cellKey)
+        const cardId = cell?.cardId
+        return cardId ? cardsMetadata.get(cardId) : null
+      }).filter(card => card !== null)
+
+      if (columnCards.length === 0) {
+        showToastNotification('No cards in this column to export', 3000)
+        return
+      }
+
+      // Show downloading toast
+      showToastNotification('Downloading...', 0)
+
+      // Call backend to generate zip
+      const response = await fetch(`${API_URL}/api/columns/${colId}/download`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          columnCards,
+          columnTitle
+        })
+      })
+
+      if (!response.ok) {
+        throw new Error('Failed to generate download')
+      }
+
+      // Download the zip file
+      const blob = await response.blob()
+      const url = window.URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `${columnTitle.replace(/\s+/g, '_')}.zip`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      window.URL.revokeObjectURL(url)
+
+      console.log('[handleColumnDownload] Downloaded column:', colId)
+
+      // Show success toast
+      hideToast()
+      showToastNotification('Download complete!', 3000)
+    } catch (error) {
+      console.error('Error downloading column:', error)
+      hideToast()
+      showToastNotification('Failed to download column', 3000)
     }
   }
 
@@ -1922,7 +2014,7 @@
                 <button class="icon-btn-header" title="Add comment">
                   <span class="material-symbols-outlined">comment</span>
                 </button>
-                <button class="icon-btn-header" title="Export">
+                <button class="icon-btn-header" title="Export" onclick={() => handleColumnDownload(colId)}>
                   <span class="material-symbols-outlined">file_download</span>
                 </button>
               </div>
@@ -2223,6 +2315,15 @@
             Delete
           </button>
         </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Toast Notification -->
+  {#if showToast}
+    <div class="toast-overlay">
+      <div class="toast">
+        {toastMessage}
       </div>
     </div>
   {/if}
@@ -3466,6 +3567,49 @@
   }
 
   @keyframes slideUp {
+    from {
+      transform: translateY(20px);
+      opacity: 0;
+    }
+    to {
+      transform: translateY(0);
+      opacity: 1;
+    }
+  }
+
+  /* Toast Notification */
+  .toast-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 30000;
+    animation: fadeIn 0.2s ease;
+    pointer-events: none;
+  }
+
+  .toast {
+    background: rgba(30, 30, 30, 0.95);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: 12px;
+    padding: 1.5rem 2.5rem;
+    color: rgba(255, 255, 255, 0.95);
+    font-size: 1rem;
+    font-weight: 500;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(12px);
+    animation: slideUpToast 0.3s ease;
+    min-width: 200px;
+    text-align: center;
+  }
+
+  @keyframes slideUpToast {
     from {
       transform: translateY(20px);
       opacity: 0;

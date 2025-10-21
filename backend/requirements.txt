@@ -5,3 +5,4 @@ y-py
 google-cloud-storage
 google-cloud-datastore
 ulid-py
+Pillow
