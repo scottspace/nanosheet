@@ -95,7 +95,7 @@
 
   // Undo stack - stores operations that can be undone
   interface UndoOperation {
-    type: 'delete' | 'edit' | 'move'
+    type: 'delete' | 'edit' | 'move' | 'deleteColumn' | 'duplicateColumn' | 'reorderColumn'
     userId: string  // Track which user performed this operation
     // For delete operations
     rowId?: string
@@ -113,6 +113,13 @@
       color: string
       prompt: string
     }
+    // For column operations
+    columnIndex?: number
+    columnCells?: Map<string, { cardId: string }>  // All cells in the column
+    sourceColId?: string
+    targetColId?: string
+    fromIndex?: number
+    toIndex?: number
   }
   let undoStack: UndoOperation[] = $state([])
   let redoStack: UndoOperation[] = $state([])
@@ -287,6 +294,27 @@
     const colIndex = cols.indexOf(colId)
     if (colIndex === -1) return
 
+    // Save column state for undo
+    const columnCells = new Map<string, { cardId: string }>()
+    rows.forEach(rowId => {
+      const cellKey = `${rowId}:${colId}`
+      const cell = sheet!.cells.get(cellKey)
+      if (cell) {
+        columnCells.set(cellKey, { ...cell })
+      }
+    })
+
+    // Save to undo stack
+    undoStack.push({
+      type: 'deleteColumn',
+      userId: USER_ID,
+      colId,
+      columnIndex: colIndex,
+      columnCells
+    })
+    // Clear redo stack on new action
+    redoStack = []
+
     // Delete all cells in this column
     rows.forEach(rowId => {
       const cellKey = `${rowId}:${colId}`
@@ -296,7 +324,7 @@
     // Remove column from colOrder
     sheet.colOrder.delete(colIndex, 1)
 
-    console.log('[deleteColumn] Deleted column:', colId)
+    console.log('[deleteColumn] Deleted column:', colId, 'saved to undo stack')
   }
 
   // Duplicate column
@@ -604,6 +632,24 @@
 
         console.log('[handleUndo] Deleted duplicated column', operation.colId)
       }
+    } else if (operation.type === 'deleteColumn' && sheet) {
+      // Undo column deletion by restoring the column
+      redoStack.push(operation)
+
+      // Restore the column to colOrder
+      const colsArray = sheet.colOrder.toArray()
+      colsArray.splice(operation.columnIndex!, 0, operation.colId!)
+      sheet.colOrder.delete(0, sheet.colOrder.length)
+      sheet.colOrder.push(colsArray)
+
+      // Restore all cells in the column
+      if (operation.columnCells) {
+        operation.columnCells.forEach((cell, cellKey) => {
+          sheet!.cells.set(cellKey, { ...cell })
+        })
+      }
+
+      console.log('[handleUndo] Restored deleted column', operation.colId)
     }
   }
 
@@ -745,6 +791,27 @@
         })
 
         console.log('[handleRedo] Re-duplicated column', operation.sourceColId, 'to', operation.colId)
+      }
+    } else if (operation.type === 'deleteColumn' && sheet) {
+      // Redo column deletion
+      undoStack.push(operation)
+
+      const colsArray = sheet.colOrder.toArray()
+      const colIndex = colsArray.indexOf(operation.colId!)
+
+      if (colIndex !== -1) {
+        // Delete the column from colOrder
+        colsArray.splice(colIndex, 1)
+        sheet.colOrder.delete(0, sheet.colOrder.length)
+        sheet.colOrder.push(colsArray)
+
+        // Delete all cells in the column
+        rows.forEach(rowId => {
+          const cellKey = `${rowId}:${operation.colId}`
+          sheet!.cells.delete(cellKey)
+        })
+
+        console.log('[handleRedo] Re-deleted column', operation.colId)
       }
     }
   }
