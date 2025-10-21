@@ -15,32 +15,10 @@
     getAllCardIds
   } from '../lib/ySheet'
 
-  // Auto-detect production vs development environment (runtime detection)
-  function getWsUrl(): string {
-    if (import.meta.env.VITE_YWS) return import.meta.env.VITE_YWS
-    if (typeof window === 'undefined') return 'ws://localhost:8000/yjs'
+  // Environment detection - will be set in onMount
+  let WS_URL = $state('')
+  let API_URL = $state('')
 
-    const isProduction = window.location.hostname !== 'localhost'
-    if (isProduction) {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      return `${protocol}//${window.location.host}/yjs`
-    }
-    return 'ws://localhost:8000/yjs'
-  }
-
-  function getApiUrl(): string {
-    if (import.meta.env.VITE_API_URL) return import.meta.env.VITE_API_URL
-    if (typeof window === 'undefined') return 'http://localhost:8000'
-
-    const isProduction = window.location.hostname !== 'localhost'
-    if (isProduction) {
-      return `${window.location.protocol}//${window.location.host}`
-    }
-    return 'http://localhost:8000'
-  }
-
-  const WS_URL = getWsUrl()
-  const API_URL = getApiUrl()
   const SHEET_ID = 'test-sheet-1'  // Persistent sheet for testing
 
   // Generate a unique user ID for this session
@@ -1777,6 +1755,12 @@
 
   // Mount/unmount
   onMount(async () => {
+    // Set URLs at runtime in the browser
+    const isProduction = window.location.hostname !== 'localhost'
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    WS_URL = import.meta.env.VITE_YWS as string || (isProduction ? `${protocol}//${window.location.host}/yjs` : 'ws://localhost:8000/yjs')
+    API_URL = import.meta.env.VITE_API_URL as string || (isProduction ? `${window.location.protocol}//${window.location.host}` : 'http://localhost:8000')
+
     console.log('Connecting to WebSocket:', WS_URL, 'Sheet ID:', SHEET_ID)
 
     // Add keyboard event listener
