@@ -12,6 +12,7 @@ primary_region = "sjc"
   PORT = "8080"
   ENVIRONMENT = "production"
   GOOGLE_APPLICATION_CREDENTIALS = "gcp-service-account-key.json"
+  YJS_GCS_BUCKET = "es-nanosheet"
 
 [http_service]
   internal_port = 8080
