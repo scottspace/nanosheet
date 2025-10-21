@@ -1,0 +1,45 @@
+# fly.toml app configuration file
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+
+app = "nanosheet"
+primary_region = "sjc"
+
+# Use Dockerfile for building
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  PORT = "8080"
+  ENVIRONMENT = "production"
+  GOOGLE_APPLICATION_CREDENTIALS = "gcp-service-account-key.json"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  max_machines_running = 1
+  processes = ["app"]
+
+  # Keep WebSocket connections alive longer (5 minutes = 300 seconds idle timeout)
+  [http_service.http_options]
+    idle_timeout = 300
+
+  # SSE connections can be long-lived
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 250
+    soft_limit = 200
+
+[[http_service.checks]]
+  grace_period = "10s"
+  interval = "30s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1
