@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte'
+  import { flip } from 'svelte/animate'
   import type { SheetConnection } from '../lib/ySheet'
   import {
     connectSheet,
@@ -32,12 +33,42 @@
   let cardsMetadata: Map<string, any> = $state(new Map())
   let shotTitles: Map<string, string> = $state(new Map())
 
+  // ============================================================================
+  // TIME/LANES ABSTRACTION
+  // ============================================================================
+  // Orientation: 'vertical' = column-major (time flows down), 'horizontal' = row-major (time flows right)
+  type Orientation = 'vertical' | 'horizontal'
+  let orientation: Orientation = 'vertical'  // Hardcoded to vertical for Phase 1
+
+  // Semantic mapping: which axis represents time flow, which represents parallel lanes
+  let timeline = $derived(orientation === 'vertical' ? rows : cols)
+  let lanes = $derived(orientation === 'vertical' ? cols : rows)
+
+  // The first lane is the fixed header (first column in vertical, first row in horizontal)
+  let fixedLane = $derived(lanes.length > 0 ? lanes[0] : null)
+
+  // Helper: Construct cell key from semantic time/lane IDs
+  function cellKey(timeId: string, laneId: string): string {
+    return orientation === 'vertical'
+      ? `${timeId}:${laneId}`   // vertical: row:col
+      : `${laneId}:${timeId}`   // horizontal: col:row (swapped)
+  }
+
+  // Helper: Parse cell key into semantic time/lane IDs
+  function parseCellKey(key: string): { timeId: string; laneId: string } {
+    const [a, b] = key.split(':')
+    return orientation === 'vertical'
+      ? { timeId: a, laneId: b }      // vertical: a=row=time, b=col=lane
+      : { timeId: b, laneId: a }      // horizontal: a=col=lane, b=row=time
+  }
+  // ============================================================================
+
   // Derived arrays that always include one extra phantom column and row for scrolling
   let displayCols = $derived([...cols, `phantom-col-${cols.length}`])
   let displayRows = $derived([...rows, `phantom-row-${rows.length}`])
   let loading = $state(true)
-  let draggedCard: { rowId: string; colId: string; cardId: string } | null = null
-  let dragPreview: { targetCol: string; targetRow: string; insertBefore: boolean } | null = $state(null)
+  let draggedCard: { timeId: string; laneId: string; cardId: string } | null = null
+  let dragPreview: { targetLane: string; targetTime: string; insertBefore: boolean } | null = $state(null)
   let isDragging = $state(false)
   let dragMousePos = $state({ x: 0, y: 0 })
 
@@ -273,25 +304,29 @@
   function handleDeleteCard(rowId: string, colId: string) {
     if (!sheet) return
 
-    // Check if this is the frozen row (first row) - deleting it deletes the whole column
-    const isFrozenRow = rows.length > 0 && rowId === rows[0]
+    // Map row/col IDs to semantic time/lane based on orientation
+    const time = orientation === 'vertical' ? rowId : colId
+    const lane = orientation === 'vertical' ? colId : rowId
 
-    if (isFrozenRow) {
-      // Count how many cards are in this column
-      const cardsInColumn = rows.filter(r => {
-        const cellKey = `${r}:${colId}`
-        const cell = cellsMap.get(cellKey)
+    // Check if this is the first time position (frozen header) - deleting it deletes the whole lane
+    const isFirstTime = timeline.length > 0 && time === timeline[0]
+
+    if (isFirstTime) {
+      // Count how many cards are in this lane
+      const cardsInLane = timeline.filter(t => {
+        const key = cellKey(t, lane)
+        const cell = cellsMap.get(key)
         return cell && cell.cardId
       }).length
 
       showConfirm(
-        `Delete this entire column? This will delete ${cardsInColumn} card${cardsInColumn !== 1 ? 's' : ''} and cannot be undone.`,
+        `Delete this entire lane? This will delete ${cardsInLane} card${cardsInLane !== 1 ? 's' : ''} and cannot be undone.`,
         () => deleteColumn(colId)
       )
     } else {
       // Save to undo stack before deleting single card
-      const cellKey = `${rowId}:${colId}`
-      const cell = cellsMap.get(cellKey)
+      const key = cellKey(time, lane)
+      const cell = cellsMap.get(key)
       if (cell && cell.cardId) {
         undoStack.push({
           type: 'delete',
@@ -306,43 +341,46 @@
       }
 
       // Delete the card
-      sheet.cells.delete(cellKey)
+      sheet.cells.delete(key)
 
-      // Shift cards up in this column to fill the gap (Kanban style)
-      const allRows = rows
-      const deletedRowIndex = allRows.indexOf(rowId)
+      // Shift cards up in this lane to fill the gap (Kanban style)
+      const allTimes = timeline
+      const deletedTimeIndex = allTimes.indexOf(time)
 
-      // Shift all cards below the deleted card up by one row
-      for (let i = deletedRowIndex + 1; i < allRows.length; i++) {
-        const currentKey = `${allRows[i]}:${colId}`
-        const prevKey = `${allRows[i - 1]}:${colId}`
+      // Shift all cards below the deleted card up by one time position
+      for (let i = deletedTimeIndex + 1; i < allTimes.length; i++) {
+        const currentKey = cellKey(allTimes[i], lane)
+        const prevKey = cellKey(allTimes[i - 1], lane)
         const card = sheet.cells.get(currentKey)
 
         if (card) {
-          // Move card from current row to previous row
+          // Move card from current time to previous time
           sheet.cells.delete(currentKey)
           sheet.cells.set(prevKey, card)
         }
       }
 
-      console.log('[handleDeleteCard] Deleted card and shifted column up:', rowId, colId)
+      console.log('[handleDeleteCard] Deleted card and shifted lane up:', time, lane)
     }
   }
 
-  // Delete entire column
+  // Delete entire lane
   function deleteColumn(colId: string) {
     if (!sheet) return
 
     const colIndex = cols.indexOf(colId)
     if (colIndex === -1) return
 
-    // Save column state for undo
+    // Map colId to semantic lane
+    const lane = orientation === 'vertical' ? colId : colId
+
+    // Save lane state for undo
     const columnCells = new Map<string, { cardId: string }>()
-    rows.forEach(rowId => {
-      const cellKey = `${rowId}:${colId}`
-      const cell = sheet!.cells.get(cellKey)
+    timeline.forEach(timeId => {
+      const key = cellKey(timeId, lane)
+      const cell = sheet!.cells.get(key)
       if (cell) {
-        columnCells.set(cellKey, { ...cell })
+        columnCells.set(key, { ...cell })
       }
     })
 
@@ -357,19 +395,19 @@
     // Clear redo stack on new action
     redoStack = []
 
-    // Delete all cells in this column
-    rows.forEach(rowId => {
-      const cellKey = `${rowId}:${colId}`
-      sheet!.cells.delete(cellKey)
+    // Delete all cells in this lane
+    timeline.forEach(timeId => {
+      const key = cellKey(timeId, lane)
+      sheet!.cells.delete(key)
     })
 
-    // Remove column from colOrder
+    // Remove lane from colOrder
     sheet.colOrder.delete(colIndex, 1)
 
-    console.log('[deleteColumn] Deleted column:', colId, 'saved to undo stack')
+    console.log('[deleteColumn] Deleted lane:', lane, 'saved to undo stack')
   }
 
-  // Duplicate column
+  // Duplicate lane
   function duplicateColumn(sourceColId: string) {
     if (!sheet) return
 
@@ -377,10 +415,14 @@
     const sourceIndex = colsArray.indexOf(sourceColId)
     if (sourceIndex === -1) return
 
-    // Generate a new column ID
+    // Generate a new lane ID
     const newColId = `c-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`
 
-    // Insert new column immediately after source column
+    // Map to semantic lanes
+    const sourceLane = orientation === 'vertical' ? sourceColId : sourceColId
+    const newLane = orientation === 'vertical' ? newColId : newColId
+
+    // Insert new lane immediately after source lane
     colsArray.splice(sourceIndex + 1, 0, newColId)
     sheet.colOrder.delete(0, sheet.colOrder.length)
     sheet.colOrder.push(colsArray)
@@ -394,17 +436,17 @@
     })
     redoStack = []
 
-    // Copy all cells from source column to new column
-    rows.forEach(rowId => {
-      const sourceKey = `${rowId}:${sourceColId}`
+    // Copy all cells from source lane to new lane
+    timeline.forEach(timeId => {
+      const sourceKey = cellKey(timeId, sourceLane)
       const cell = sheet!.cells.get(sourceKey)
       if (cell) {
-        const newKey = `${rowId}:${newColId}`
+        const newKey = cellKey(timeId, newLane)
         sheet!.cells.set(newKey, { ...cell })
       }
     })
 
-    console.log('[duplicateColumn] Duplicated column', sourceColId, 'to', newColId, 'at index', sourceIndex + 1)
+    console.log('[duplicateColumn] Duplicated lane', sourceLane, 'to', newLane, 'at index', sourceIndex + 1)
   }
 
   function toggleColumnMenu(colId: string, e: MouseEvent) {
@@ -417,16 +459,16 @@
   }
 
   // Column drag handlers
-  function handleColumnDragStart(e: DragEvent, colId: string) {
-    draggedColumn = colId
+  function handleColumnDragStart(e: DragEvent, laneId: string) {
+    draggedColumn = laneId
     isColumnDragging = true
 
     // Set drag data
     if (e.dataTransfer) {
       e.dataTransfer.effectAllowed = 'move'
-      e.dataTransfer.setData('text/plain', colId)
+      e.dataTransfer.setData('text/plain', laneId)
 
-      // Create a custom drag image showing the entire column
+      // Create a custom drag image showing the entire lane
       const dragPreview = document.createElement('div')
       dragPreview.style.position = 'absolute'
       dragPreview.style.top = '-9999px'
@@ -437,17 +479,17 @@
       dragPreview.style.opacity = '0.7'
       dragPreview.style.pointerEvents = 'none'
 
-      // Find all cards in this column
-      const colIndex = cols.indexOf(colId)
-      const columnCards = rows.map(rowId => {
-        const cellKey = `${rowId}:${colId}`
-        const cell = cellsMap.get(cellKey)
+      // Find all cards in this lane
+      const laneIndex = lanes.indexOf(laneId)
+      const laneCards = timeline.map(timeId => {
+        const key = cellKey(timeId, laneId)
+        const cell = cellsMap.get(key)
         const cardId = cell?.cardId
         return cardId ? cardsMetadata.get(cardId) : null
       }).filter(card => card !== null)
 
       // Add card previews to the drag image
-      columnCards.forEach(card => {
+      laneCards.forEach(card => {
         const cardDiv = document.createElement('div')
         cardDiv.style.width = `${THUMBNAIL_SIZES[selectedThumbnailSize].width}px`
         cardDiv.style.height = `${THUMBNAIL_SIZES[selectedThumbnailSize].height}px`
@@ -466,7 +508,18 @@
       })
 
       document.body.appendChild(dragPreview)
-      e.dataTransfer.setDragImage(dragPreview, THUMBNAIL_SIZES[selectedThumbnailSize].width / 2, 20)
+
+      // Calculate total height of the column preview
+      const cardHeight = THUMBNAIL_SIZES[selectedThumbnailSize].height
+      const gap = THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035
+      const totalHeight = laneCards.length * cardHeight + (laneCards.length - 1) * gap
+
+      // Position cursor at center of column (horizontally and vertically)
+      // This ensures dragover events fire when any part of the column overlaps a drop zone
+      const xOffset = THUMBNAIL_SIZES[selectedThumbnailSize].width / 2
+      const yOffset = totalHeight / 2
+
+      e.dataTransfer.setDragImage(dragPreview, xOffset, yOffset)
 
       // Remove the preview element after a brief delay
       setTimeout(() => {
@@ -474,13 +527,17 @@
       }, 0)
     }
 
-    console.log('[handleColumnDragStart] Dragging column:', colId)
+    console.log('[handleColumnDragStart] Dragging lane:', laneId)
   }
 
-  function handleColumnDragOver(e: DragEvent, targetColId: string) {
-    if (!draggedColumn || draggedColumn === targetColId) return
-
+  function handleColumnDragOver(e: DragEvent, targetLaneId: string) {
     e.preventDefault()
+
+    if (!draggedColumn || draggedColumn === targetLaneId) {
+      columnDragPreview = null
+      return
+    }
+
     if (e.dataTransfer) {
       e.dataTransfer.dropEffect = 'move'
     }
@@ -490,9 +547,24 @@
     const midpoint = rect.left + rect.width / 2
     const insertBefore = e.clientX < midpoint
 
-    const targetIndex = cols.indexOf(targetColId)
+    const sourceIndex = lanes.indexOf(draggedColumn)
+    const targetIndex = lanes.indexOf(targetLaneId)
 
-    if (targetIndex === -1) return
+    if (targetIndex === -1 || sourceIndex === -1) return
+
+    // Calculate what the final index would be
+    let finalIndex = insertBefore ? targetIndex : targetIndex + 1
+
+    // Adjust if dragging from left to right
+    if (sourceIndex < finalIndex) {
+      finalIndex--
+    }
+
+    // Don't show preview if the column would end up in the same position
+    if (sourceIndex === finalIndex) {
+      columnDragPreview = null
+      return
+    }
 
     columnDragPreview = {
       targetColIndex: targetIndex,
@@ -500,19 +572,31 @@
     }
   }
 
-  function handleColumnDrop(e: DragEvent, targetColId: string) {
+  function handleColumnDrop(e: DragEvent, targetLaneId: string) {
     e.preventDefault()
     e.stopPropagation()
 
-    if (!draggedColumn || !sheet || draggedColumn === targetColId) {
+    console.log('[handleColumnDrop] Drop event', { draggedColumn, targetLaneId })
+
+    if (!draggedColumn || !sheet || draggedColumn === targetLaneId) {
+      console.log('[handleColumnDrop] Early exit:', { draggedColumn, hasSheet: !!sheet, sameTarget: draggedColumn === targetLaneId })
       resetColumnDrag()
       return
     }
 
-    const sourceIndex = cols.indexOf(draggedColumn)
-    const targetIndex = cols.indexOf(targetColId)
+    // Get the lane order array from Yjs (use colOrder in vertical mode, rowOrder in horizontal)
+    const laneOrder = orientation === 'vertical' ? sheet.colOrder : sheet.rowOrder
+    const lanesArray = laneOrder.toArray()
+
+    console.log('[handleColumnDrop] Lanes array:', lanesArray)
+
+    const sourceIndex = lanesArray.indexOf(draggedColumn)
+    const targetIndex = lanesArray.indexOf(targetLaneId)
+
+    console.log('[handleColumnDrop] Indices:', { sourceIndex, targetIndex })
 
     if (sourceIndex === -1 || targetIndex === -1) {
+      console.log('[handleColumnDrop] Invalid indices, exiting')
       resetColumnDrag()
       return
     }
@@ -529,6 +613,8 @@
       finalIndex--
     }
 
+    console.log('[handleColumnDrop] Final index calculation:', { insertBefore, finalIndex })
+
     if (sourceIndex !== finalIndex) {
       // Save to undo stack
       undoStack.push({
@@ -541,15 +627,18 @@
       redoStack = []
 
       // Reorder in Yjs
-      const colsArray = sheet.colOrder.toArray()
-      const [movedCol] = colsArray.splice(sourceIndex, 1)
-      colsArray.splice(finalIndex, 0, movedCol)
+      const [movedLane] = lanesArray.splice(sourceIndex, 1)
+      lanesArray.splice(finalIndex, 0, movedLane)
+
+      console.log('[handleColumnDrop] New lanes array:', lanesArray)
 
       // Update Yjs
-      sheet.colOrder.delete(0, sheet.colOrder.length)
-      sheet.colOrder.push(colsArray)
+      laneOrder.delete(0, laneOrder.length)
+      laneOrder.push(lanesArray)
 
-      console.log('[handleColumnDrop] Reordered column', draggedColumn, 'from', sourceIndex, 'to', finalIndex)
+      console.log('[handleColumnDrop] Reordered lane', draggedColumn, 'from', sourceIndex, 'to', finalIndex)
+    } else {
+      console.log('[handleColumnDrop] No reorder needed, sourceIndex === finalIndex')
     }
 
     resetColumnDrag()
@@ -559,7 +648,6 @@
     draggedColumn = null
     isColumnDragging = false
     columnDragPreview = null
-    visualColumnOrder = []
   }
 
   // Handle escape key to cancel drag operations
@@ -619,8 +707,14 @@
       // Save to redo stack
       redoStack.push(operation)
 
+      // Map operation row/col to time/lane based on current orientation
+      const toTime = orientation === 'vertical' ? operation.toRow : operation.toCol
+      const toLane = orientation === 'vertical' ? operation.toCol : operation.toRow
+      const fromTime = orientation === 'vertical' ? operation.fromRow : operation.fromCol
+      const fromLane = orientation === 'vertical' ? operation.fromCol : operation.fromRow
+
       // Step 1: Remove card from target position
-      const toKey = `${operation.toRow}:${operation.toCol}`
+      const toKey = cellKey(toTime, toLane)
       const card = sheet.cells.get(toKey)
 
       if (!card) {
@@ -631,15 +725,15 @@
       sheet.cells.delete(toKey)
       console.log('[handleUndo] Removed card from:', toKey)
 
-      // Step 2: Get all rows and find positions
-      const allRows = rows
-      const fromRowIndex = allRows.indexOf(operation.fromRow)
-      const toRowIndex = allRows.indexOf(operation.toRow)
+      // Step 2: Get all time points and find positions
+      const allTimes = timeline
+      const fromTimeIndex = allTimes.indexOf(fromTime)
+      const toTimeIndex = allTimes.indexOf(toTime)
 
-      // Step 3: Shift cards in target column UP to fill the gap (reverse of step 4 in move)
-      for (let i = toRowIndex + 1; i < allRows.length; i++) {
-        const currentKey = `${allRows[i]}:${operation.toCol}`
-        const prevKey = `${allRows[i - 1]}:${operation.toCol}`
+      // Step 3: Shift cards in target lane forward in time to fill the gap (reverse of step 4 in move)
+      for (let i = toTimeIndex + 1; i < allTimes.length; i++) {
+        const currentKey = cellKey(allTimes[i], toLane)
+        const prevKey = cellKey(allTimes[i - 1], toLane)
         const shiftCard = sheet.cells.get(currentKey)
         if (shiftCard) {
           sheet.cells.delete(currentKey)
@@ -647,73 +741,81 @@
         }
       }
 
-      // Step 4: Shift cards in source column DOWN from original position (reverse of step 3 in move)
-      for (let i = allRows.length - 1; i > fromRowIndex; i--) {
-        const prevKey = `${allRows[i - 1]}:${operation.fromCol}`
-        const currentKey = `${allRows[i]}:${operation.fromCol}`
+      // Step 4: Shift cards in source lane backward in time from original position (reverse of step 3 in move)
+      for (let i = allTimes.length - 1; i > fromTimeIndex; i--) {
+        const prevKey = cellKey(allTimes[i - 1], fromLane)
+        const currentKey = cellKey(allTimes[i], fromLane)
         const shiftCard = sheet.cells.get(prevKey)
-        if (shiftCard && i < allRows.length) {
+        if (shiftCard && i < allTimes.length) {
           sheet.cells.delete(prevKey)
           sheet.cells.set(currentKey, shiftCard)
         }
       }
 
       // Step 5: Place card back at original position
-      const fromKey = `${operation.fromRow}:${operation.fromCol}`
+      const fromKey = cellKey(fromTime, fromLane)
       sheet.cells.set(fromKey, card)
       console.log('[handleUndo] Restored card to original position:', fromKey)
     } else if (operation.type === 'delete' && sheet) {
       // Save current state (empty cell) to redo stack
       redoStack.push(operation)
 
-      // Shift cards down in this column to make room (reverse of delete)
-      const allRows = rows
-      const restoredRowIndex = allRows.indexOf(operation.rowId)
+      // Map operation row/col to time/lane based on current orientation
+      const deleteTime = orientation === 'vertical' ? operation.rowId : operation.colId
+      const deleteLane = orientation === 'vertical' ? operation.colId : operation.rowId
 
-      // Shift all cards from the restored position down by one row (in reverse order)
-      for (let i = allRows.length - 1; i > restoredRowIndex; i--) {
-        const prevKey = `${allRows[i - 1]}:${operation.colId}`
-        const currentKey = `${allRows[i]}:${operation.colId}`
+      // Shift cards forward in time in this lane to make room (reverse of delete shift-up)
+      const allTimes = timeline
+      const restoredTimeIndex = allTimes.indexOf(deleteTime)
+
+      // Shift all cards from the restored position forward in time (in reverse order)
+      for (let i = allTimes.length - 1; i > restoredTimeIndex; i--) {
+        const prevKey = cellKey(allTimes[i - 1], deleteLane)
+        const currentKey = cellKey(allTimes[i], deleteLane)
         const card = sheet.cells.get(prevKey)
 
         if (card) {
-          // Move card from previous row to current row
+          // Move card from earlier time to later time (forward in time)
           sheet.cells.delete(prevKey)
           sheet.cells.set(currentKey, card)
         }
       }
 
       // Re-add the card to the cell
-      const cellKey = `${operation.rowId}:${operation.colId}`
-      sheet.cells.set(cellKey, { cardId: operation.cardId })
-      console.log('[handleUndo] Restored card to', cellKey, 'and shifted column down')
+      const key = cellKey(deleteTime, deleteLane)
+      sheet.cells.set(key, { cardId: operation.cardId })
+      console.log('[handleUndo] Restored card to', key, 'and shifted lane forward in time')
     } else if (operation.type === 'insert' && sheet) {
       // Undo card insert by deleting it
       // Save to redo stack
       redoStack.push(operation)
 
-      // Delete the card from the cell (same as handleDeleteCard but without shift-up)
-      const cellKey = `${operation.rowId}:${operation.colId}`
-      sheet.cells.delete(cellKey)
+      // Map operation row/col to time/lane based on current orientation
+      const insertTime = orientation === 'vertical' ? operation.rowId : operation.colId
+      const insertLane = orientation === 'vertical' ? operation.colId : operation.rowId
 
-      // Shift cards up in this column to fill the gap
-      const allRows = rows
-      const deletedRowIndex = allRows.indexOf(operation.rowId)
+      // Delete the card from the cell
+      const key = cellKey(insertTime, insertLane)
+      sheet.cells.delete(key)
 
-      // Shift all cards below the deleted card up by one row
-      for (let i = deletedRowIndex + 1; i < allRows.length; i++) {
-        const currentKey = `${allRows[i]}:${operation.colId}`
-        const prevKey = `${allRows[i - 1]}:${operation.colId}`
+      // Shift cards backward in time in this lane to fill the gap
+      const allTimes = timeline
+      const deletedTimeIndex = allTimes.indexOf(insertTime)
+
+      // Shift all cards after the deleted card backward in time (to earlier times)
+      for (let i = deletedTimeIndex + 1; i < allTimes.length; i++) {
+        const currentKey = cellKey(allTimes[i], insertLane)
+        const prevKey = cellKey(allTimes[i - 1], insertLane)
         const card = sheet.cells.get(currentKey)
 
         if (card) {
-          // Move card from current row to previous row
+          // Move card from later time to earlier time (backward in time)
           sheet.cells.delete(currentKey)
           sheet.cells.set(prevKey, card)
         }
       }
 
-      console.log('[handleUndo] Deleted inserted card from', cellKey, 'and shifted column up')
+      console.log('[handleUndo] Deleted inserted card from', key, 'and shifted lane backward in time')
     } else if (operation.type === 'edit' && operation.previousState) {
       // Get current state before undoing
       const currentCard = cardsMetadata.get(operation.previousState.cardId)
@@ -757,56 +859,59 @@
         console.error('[handleUndo] Error restoring card:', error)
       }
     } else if (operation.type === 'reorderColumn' && sheet) {
-      // Undo column reorder
+      // Undo lane reorder
       redoStack.push(operation)
 
-      const colsArray = sheet.colOrder.toArray()
-      const [movedCol] = colsArray.splice(operation.toIndex, 1)
-      colsArray.splice(operation.fromIndex, 0, movedCol)
+      const laneOrder = orientation === 'vertical' ? sheet.colOrder : sheet.rowOrder
+      const lanesArray = laneOrder.toArray()
+      const [movedLane] = lanesArray.splice(operation.toIndex, 1)
+      lanesArray.splice(operation.fromIndex, 0, movedLane)
 
-      sheet.colOrder.delete(0, sheet.colOrder.length)
-      sheet.colOrder.push(colsArray)
+      laneOrder.delete(0, laneOrder.length)
+      laneOrder.push(lanesArray)
 
-      console.log('[handleUndo] Restored column order', operation.colId, 'from', operation.toIndex, 'to', operation.fromIndex)
+      console.log('[handleUndo] Restored lane order', operation.colId, 'from', operation.toIndex, 'to', operation.fromIndex)
     } else if (operation.type === 'duplicateColumn' && sheet) {
-      // Undo column duplication by deleting the duplicated column
+      // Undo lane duplication by deleting the duplicated lane
       redoStack.push(operation)
 
-      const colsArray = sheet.colOrder.toArray()
-      const colIndex = colsArray.indexOf(operation.colId)
+      const laneOrder = orientation === 'vertical' ? sheet.colOrder : sheet.rowOrder
+      const lanesArray = laneOrder.toArray()
+      const laneIndex = lanesArray.indexOf(operation.colId)
 
-      if (colIndex !== -1) {
-        // Delete the column from colOrder
-        colsArray.splice(colIndex, 1)
-        sheet.colOrder.delete(0, sheet.colOrder.length)
-        sheet.colOrder.push(colsArray)
+      if (laneIndex !== -1) {
+        // Delete the lane from laneOrder
+        lanesArray.splice(laneIndex, 1)
+        laneOrder.delete(0, laneOrder.length)
+        laneOrder.push(lanesArray)
 
-        // Delete all cells in this column
-        rows.forEach(rowId => {
-          const cellKey = `${rowId}:${operation.colId}`
-          sheet!.cells.delete(cellKey)
+        // Delete all cells in this lane
+        timeline.forEach(timeId => {
+          const key = cellKey(timeId, operation.colId)
+          sheet!.cells.delete(key)
         })
 
-        console.log('[handleUndo] Deleted duplicated column', operation.colId)
+        console.log('[handleUndo] Deleted duplicated lane', operation.colId)
       }
     } else if (operation.type === 'deleteColumn' && sheet) {
-      // Undo column deletion by restoring the column
+      // Undo lane deletion by restoring the lane
       redoStack.push(operation)
 
-      // Restore the column to colOrder
-      const colsArray = sheet.colOrder.toArray()
-      colsArray.splice(operation.columnIndex!, 0, operation.colId!)
-      sheet.colOrder.delete(0, sheet.colOrder.length)
-      sheet.colOrder.push(colsArray)
+      // Restore the lane to laneOrder
+      const laneOrder = orientation === 'vertical' ? sheet.colOrder : sheet.rowOrder
+      const lanesArray = laneOrder.toArray()
+      lanesArray.splice(operation.columnIndex!, 0, operation.colId!)
+      laneOrder.delete(0, laneOrder.length)
+      laneOrder.push(lanesArray)
 
-      // Restore all cells in the column
+      // Restore all cells in the lane (cell keys are already correctly formatted)
       if (operation.columnCells) {
-        operation.columnCells.forEach((cell, cellKey) => {
-          sheet!.cells.set(cellKey, { ...cell })
+        operation.columnCells.forEach((cell, key) => {
+          sheet!.cells.set(key, { ...cell })
         })
       }
 
-      console.log('[handleUndo] Restored deleted column', operation.colId)
+      console.log('[handleUndo] Restored deleted lane', operation.colId)
     }
   }
 
@@ -840,8 +945,14 @@
       // Save to undo stack
       undoStack.push(operation)
 
+      // Map row/col to time/lane based on orientation
+      const fromTime = orientation === 'vertical' ? operation.fromRow : operation.fromCol
+      const fromLane = orientation === 'vertical' ? operation.fromCol : operation.fromRow
+      const toTime = orientation === 'vertical' ? operation.toRow : operation.toCol
+      const toLane = orientation === 'vertical' ? operation.toCol : operation.toRow
+
       // Step 1: Remove card from source position
-      const fromKey = `${operation.fromRow}:${operation.fromCol}`
+      const fromKey = cellKey(fromTime, fromLane)
       const card = sheet.cells.get(fromKey)
 
       if (!card) {
@@ -852,15 +963,15 @@
       sheet.cells.delete(fromKey)
       console.log('[handleRedo] Removed card from:', fromKey)
 
-      // Step 2: Get all rows and find positions
-      const allRows = rows
-      const fromRowIndex = allRows.indexOf(operation.fromRow)
-      const toRowIndex = allRows.indexOf(operation.toRow)
+      // Step 2: Get all times and find positions
+      const allTimes = timeline
+      const fromTimeIndex = allTimes.indexOf(fromTime)
+      const toTimeIndex = allTimes.indexOf(toTime)
 
-      // Step 3: Shift cards in source column UP to fill the gap
-      for (let i = fromRowIndex + 1; i < allRows.length; i++) {
-        const currentKey = `${allRows[i]}:${operation.fromCol}`
-        const prevKey = `${allRows[i - 1]}:${operation.fromCol}`
+      // Step 3: Shift cards in source lane UP to fill the gap
+      for (let i = fromTimeIndex + 1; i < allTimes.length; i++) {
+        const currentKey = cellKey(allTimes[i], fromLane)
+        const prevKey = cellKey(allTimes[i - 1], fromLane)
         const shiftCard = sheet.cells.get(currentKey)
         if (shiftCard) {
           sheet.cells.delete(currentKey)
@@ -868,73 +979,81 @@
         }
       }
 
-      // Step 4: Shift cards in target column DOWN to make room
-      for (let i = allRows.length - 1; i > toRowIndex; i--) {
-        const prevKey = `${allRows[i - 1]}:${operation.toCol}`
-        const currentKey = `${allRows[i]}:${operation.toCol}`
+      // Step 4: Shift cards in target lane DOWN to make room
+      for (let i = allTimes.length - 1; i > toTimeIndex; i--) {
+        const prevKey = cellKey(allTimes[i - 1], toLane)
+        const currentKey = cellKey(allTimes[i], toLane)
         const shiftCard = sheet.cells.get(prevKey)
-        if (shiftCard && i < allRows.length) {
+        if (shiftCard && i < allTimes.length) {
           sheet.cells.delete(prevKey)
           sheet.cells.set(currentKey, shiftCard)
         }
       }
 
       // Step 5: Place card at target position
-      const toKey = `${operation.toRow}:${operation.toCol}`
+      const toKey = cellKey(toTime, toLane)
       sheet.cells.set(toKey, card)
       console.log('[handleRedo] Re-moved card to:', toKey)
     } else if (operation.type === 'delete' && sheet) {
       // Save to undo stack
       undoStack.push(operation)
 
+      // Map row/col to time/lane based on orientation
+      const time = orientation === 'vertical' ? operation.rowId : operation.colId
+      const lane = orientation === 'vertical' ? operation.colId : operation.rowId
+
       // Remove the card from the cell
-      const cellKey = `${operation.rowId}:${operation.colId}`
-      sheet.cells.delete(cellKey)
+      const key = cellKey(time, lane)
+      sheet.cells.delete(key)
 
-      // Shift cards up in this column to fill the gap (same as handleDeleteCard)
-      const allRows = sheet.rowOrder.toArray()
-      const deletedRowIndex = allRows.indexOf(operation.rowId)
+      // Shift cards up in this lane to fill the gap (same as handleDeleteCard)
+      const allTimes = timeline
+      const deletedTimeIndex = allTimes.indexOf(time)
 
-      // Shift all cards below the deleted card up by one row
-      for (let i = deletedRowIndex + 1; i < allRows.length; i++) {
-        const currentKey = `${allRows[i]}:${operation.colId}`
-        const prevKey = `${allRows[i - 1]}:${operation.colId}`
+      // Shift all cards below the deleted card up by one time position
+      for (let i = deletedTimeIndex + 1; i < allTimes.length; i++) {
+        const currentKey = cellKey(allTimes[i], lane)
+        const prevKey = cellKey(allTimes[i - 1], lane)
         const card = sheet.cells.get(currentKey)
 
         if (card) {
-          // Move card from current row to previous row
+          // Move card from current time to previous time
           sheet.cells.delete(currentKey)
           sheet.cells.set(prevKey, card)
         }
       }
 
-      console.log('[handleRedo] Re-deleted card from', cellKey, 'and shifted column up')
+      console.log('[handleRedo] Re-deleted card from', key, 'and shifted lane up')
     } else if (operation.type === 'insert' && sheet) {
       // Redo card insert by re-adding it to the cell
       // Save to undo stack
       undoStack.push(operation)
 
-      // Shift cards down in this column to make room (reverse of undo insert)
-      const allRows = sheet.rowOrder.toArray()
-      const restoredRowIndex = allRows.indexOf(operation.rowId)
+      // Map row/col to time/lane based on orientation
+      const time = orientation === 'vertical' ? operation.rowId : operation.colId
+      const lane = orientation === 'vertical' ? operation.colId : operation.rowId
 
-      // Shift all cards from the restored position down by one row (in reverse order)
-      for (let i = allRows.length - 1; i > restoredRowIndex; i--) {
-        const prevKey = `${allRows[i - 1]}:${operation.colId}`
-        const currentKey = `${allRows[i]}:${operation.colId}`
+      // Shift cards down in this lane to make room (reverse of undo insert)
+      const allTimes = timeline
+      const restoredTimeIndex = allTimes.indexOf(time)
+
+      // Shift all cards from the restored position down by one time position (in reverse order)
+      for (let i = allTimes.length - 1; i > restoredTimeIndex; i--) {
+        const prevKey = cellKey(allTimes[i - 1], lane)
+        const currentKey = cellKey(allTimes[i], lane)
         const card = sheet.cells.get(prevKey)
 
         if (card) {
-          // Move card from previous row to current row
+          // Move card from previous time to current time
           sheet.cells.delete(prevKey)
           sheet.cells.set(currentKey, card)
         }
       }
 
       // Re-add the card to the cell
-      const cellKey = `${operation.rowId}:${operation.colId}`
-      sheet.cells.set(cellKey, { cardId: operation.cardId })
-      console.log('[handleRedo] Re-inserted card to', cellKey, 'and shifted column down')
+      const key = cellKey(time, lane)
+      sheet.cells.set(key, { cardId: operation.cardId })
+      console.log('[handleRedo] Re-inserted card to', key, 'and shifted lane down')
     } else if (operation.type === 'edit' && operation.previousState) {
       // Get current state before redoing
       const currentCard = cardsMetadata.get(operation.previousState.cardId)
@@ -978,75 +1097,78 @@
         console.error('[handleRedo] Error reapplying card:', error)
       }
     } else if (operation.type === 'reorderColumn' && sheet) {
-      // Redo column reorder
+      // Redo lane reorder
       undoStack.push(operation)
 
-      const colsArray = sheet.colOrder.toArray()
-      const [movedCol] = colsArray.splice(operation.fromIndex, 1)
-      colsArray.splice(operation.toIndex, 0, movedCol)
+      const laneOrder = orientation === 'vertical' ? sheet.colOrder : sheet.rowOrder
+      const lanesArray = laneOrder.toArray()
+      const [movedLane] = lanesArray.splice(operation.fromIndex, 1)
+      lanesArray.splice(operation.toIndex, 0, movedLane)
 
-      sheet.colOrder.delete(0, sheet.colOrder.length)
-      sheet.colOrder.push(colsArray)
+      laneOrder.delete(0, laneOrder.length)
+      laneOrder.push(lanesArray)
 
-      console.log('[handleRedo] Re-reordered column', operation.colId, 'from', operation.fromIndex, 'to', operation.toIndex)
+      console.log('[handleRedo] Re-reordered lane', operation.colId, 'from', operation.fromIndex, 'to', operation.toIndex)
     } else if (operation.type === 'duplicateColumn' && sheet) {
-      // Redo column duplication
+      // Redo lane duplication
       undoStack.push(operation)
 
-      // Re-add the column
-      const colsArray = sheet.colOrder.toArray()
-      const sourceIndex = colsArray.indexOf(operation.sourceColId)
+      // Re-add the lane
+      const laneOrder = orientation === 'vertical' ? sheet.colOrder : sheet.rowOrder
+      const lanesArray = laneOrder.toArray()
+      const sourceIndex = lanesArray.indexOf(operation.sourceColId)
 
       if (sourceIndex !== -1) {
-        colsArray.splice(sourceIndex + 1, 0, operation.colId)
-        sheet.colOrder.delete(0, sheet.colOrder.length)
-        sheet.colOrder.push(colsArray)
+        lanesArray.splice(sourceIndex + 1, 0, operation.colId)
+        laneOrder.delete(0, laneOrder.length)
+        laneOrder.push(lanesArray)
 
-        // Re-copy all cells from source column
-        rows.forEach(rowId => {
-          const sourceKey = `${rowId}:${operation.sourceColId}`
+        // Re-copy all cells from source lane
+        timeline.forEach(timeId => {
+          const sourceKey = cellKey(timeId, operation.sourceColId)
           const cell = sheet!.cells.get(sourceKey)
           if (cell) {
-            const newKey = `${rowId}:${operation.colId}`
+            const newKey = cellKey(timeId, operation.colId)
             sheet!.cells.set(newKey, { ...cell })
           }
         })
 
-        console.log('[handleRedo] Re-duplicated column', operation.sourceColId, 'to', operation.colId)
+        console.log('[handleRedo] Re-duplicated lane', operation.sourceColId, 'to', operation.colId)
       }
     } else if (operation.type === 'deleteColumn' && sheet) {
-      // Redo column deletion
+      // Redo lane deletion
       undoStack.push(operation)
 
-      const colsArray = sheet.colOrder.toArray()
-      const colIndex = colsArray.indexOf(operation.colId!)
+      const laneOrder = orientation === 'vertical' ? sheet.colOrder : sheet.rowOrder
+      const lanesArray = laneOrder.toArray()
+      const laneIndex = lanesArray.indexOf(operation.colId!)
 
-      if (colIndex !== -1) {
-        // Delete the column from colOrder
-        colsArray.splice(colIndex, 1)
-        sheet.colOrder.delete(0, sheet.colOrder.length)
-        sheet.colOrder.push(colsArray)
+      if (laneIndex !== -1) {
+        // Delete the lane from laneOrder
+        lanesArray.splice(laneIndex, 1)
+        laneOrder.delete(0, laneOrder.length)
+        laneOrder.push(lanesArray)
 
-        // Delete all cells in the column
-        rows.forEach(rowId => {
-          const cellKey = `${rowId}:${operation.colId}`
-          sheet!.cells.delete(cellKey)
+        // Delete all cells in the lane
+        timeline.forEach(timeId => {
+          const key = cellKey(timeId, operation.colId)
+          sheet!.cells.delete(key)
         })
 
-        console.log('[handleRedo] Re-deleted column', operation.colId)
+        console.log('[handleRedo] Re-deleted lane', operation.colId)
       }
     }
   }
 
   // Drag & Drop handlers with visual preview
-  function handleDragStart(event: DragEvent, rowId: string, colId: string, cardId: string) {
-    // Skip frozen row (first row)
-    if (rows.length > 0 && rowId === rows[0]) {
+  function handleDragStart(event: DragEvent, timeId: string, laneId: string, cardId: string) {
+    // Skip frozen time position (first time slot, which is the header row in vertical mode)
+    if (timeline.length > 0 && timeId === timeline[0]) {
       event.preventDefault()
       return
     }
 
-    draggedCard = { rowId, colId, cardId }
+    draggedCard = { timeId, laneId, cardId }
     isDragging = true
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = 'move'
@@ -1055,22 +1177,22 @@
     console.log('[handleDragStart] Started dragging:', cardId)
   }
 
-  function handleDragOver(event: DragEvent, targetRow: string, targetCol: string, cardElement: HTMLElement) {
+  function handleDragOver(event: DragEvent, targetTime: string, targetLane: string, cardElement: HTMLElement) {
     event.preventDefault()
     if (!draggedCard || !isDragging) {
       console.log('[handleDragOver] Skipped - no draggedCard or not dragging')
       return
     }
 
-    // Skip frozen row as drop target
-    if (rows.length > 0 && targetRow === rows[0]) {
+    // Skip frozen time position as drop target (first time slot, which is header row in vertical mode)
+    if (timeline.length > 0 && targetTime === timeline[0]) {
       dragPreview = null
-      console.log('[handleDragOver] Skipped - frozen row')
+      console.log('[handleDragOver] Skipped - frozen time position')
       return
     }
 
     // Don't show preview if it's the same cell
-    if (draggedCard.rowId === targetRow && draggedCard.colId === targetCol) {
+    if (draggedCard.timeId === targetTime && draggedCard.laneId === targetLane) {
       dragPreview = null
       return
     }
@@ -1078,7 +1200,8 @@
     // Track mouse position
     dragMousePos = { x: event.clientX, y: event.clientY }
 
-    // Calculate if mouse is in top or bottom half of card
+    // Calculate if mouse is in top or bottom half of card (vertical orientation)
+    // In future phases, this will adapt based on orientation
     const rect = cardElement.getBoundingClientRect()
     const mouseY = event.clientY
     const cardMidpoint = rect.top + (rect.height / 2)
@@ -1086,12 +1209,12 @@
 
     // Update preview
     dragPreview = {
-      targetCol,
-      targetRow,
+      targetLane,
+      targetTime,
       insertBefore
     }
 
-    console.log('[handleDragOver] Updated preview:', { targetRow, targetCol, insertBefore })
+    console.log('[handleDragOver] Updated preview:', { targetTime, targetLane, insertBefore })
 
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = 'move'
@@ -1105,7 +1228,7 @@
     draggedCard = null
   }
 
-  function handleDrop(event: DragEvent, toRow: string, toCol: string) {
+  function handleDrop(event: DragEvent, toTime: string, toLane: string) {
     event.preventDefault()
     if (!sheet || !draggedCard || !dragPreview) {
       console.log('[handleDrop] Missing required data:', { hasSheet: !!sheet, hasDraggedCard: !!draggedCard, hasDragPreview: !!dragPreview })
@@ -1115,18 +1238,18 @@
       return
     }
 
-    const { rowId: fromRow, colId: fromCol, cardId } = draggedCard
-    const { targetRow, targetCol, insertBefore } = dragPreview
+    const { timeId: fromTime, laneId: fromLane, cardId } = draggedCard
+    const { targetTime, targetLane, insertBefore } = dragPreview
 
     console.log('[handleDrop] Dropping card:', {
-      fromRow, fromCol, cardId,
-      targetRow, targetCol, insertBefore,
-      dropEventRow: toRow, dropEventCol: toCol
+      fromTime, fromLane, cardId,
+      targetTime, targetLane, insertBefore,
+      dropEventTime: toTime, dropEventLane: toLane
     })
 
-    // Kanban-style move: shift cards within columns
+    // Kanban-style move: shift cards within lanes
     // Step 1: Remove card from source
-    const fromKey = `${fromRow}:${fromCol}`
+    const fromKey = cellKey(fromTime, fromLane)
     const cardData = sheet.cells.get(fromKey)
 
     if (!cardData) {
@@ -1140,17 +1263,17 @@
     sheet.cells.delete(fromKey)
     console.log('[handleDrop] Removed from:', fromKey)
 
-    // Step 2: Get all rows and find positions
-    const allRows = rows
-    const fromRowIndex = allRows.indexOf(fromRow)
-    const targetRowIndex = allRows.indexOf(targetRow)
+    // Step 2: Get all time points and find positions
+    const allTimes = timeline
+    const fromTimeIndex = allTimes.indexOf(fromTime)
+    const targetTimeIndex = allTimes.indexOf(targetTime)
 
-    // Step 3: Shift cards in source column UP to fill the gap
-    if (fromCol === targetCol) {
-      // Same column - just need to shift and reorder
-      for (let i = fromRowIndex + 1; i < allRows.length; i++) {
-        const currentKey = `${allRows[i]}:${fromCol}`
-        const prevKey = `${allRows[i - 1]}:${fromCol}`
+    // Step 3: Shift cards in source lane to fill the gap (shift forward in time)
+    if (fromLane === targetLane) {
+      // Same lane - just need to shift and reorder
+      for (let i = fromTimeIndex + 1; i < allTimes.length; i++) {
+        const currentKey = cellKey(allTimes[i], fromLane)
+        const prevKey = cellKey(allTimes[i - 1], fromLane)
         const card = sheet.cells.get(currentKey)
         if (card) {
           sheet.cells.delete(currentKey)
@@ -1158,10 +1281,10 @@
         }
       }
     } else {
-      // Different columns - shift source column UP
-      for (let i = fromRowIndex + 1; i < allRows.length; i++) {
-        const currentKey = `${allRows[i]}:${fromCol}`
-        const prevKey = `${allRows[i - 1]}:${fromCol}`
+      // Different lanes - shift source lane forward in time
+      for (let i = fromTimeIndex + 1; i < allTimes.length; i++) {
+        const currentKey = cellKey(allTimes[i], fromLane)
+        const prevKey = cellKey(allTimes[i - 1], fromLane)
         const card = sheet.cells.get(currentKey)
         if (card) {
           sheet.cells.delete(currentKey)
@@ -1170,34 +1293,35 @@
       }
     }
 
-    // Step 4: Shift cards in target column DOWN from target position
-    const insertAtIndex = insertBefore ? targetRowIndex : targetRowIndex + 1
+    // Step 4: Shift cards in target lane backward in time from target position
+    const insertAtIndex = insertBefore ? targetTimeIndex : targetTimeIndex + 1
 
-    // Shift cards down starting from the bottom
-    for (let i = allRows.length - 1; i >= insertAtIndex; i--) {
-      const currentKey = `${allRows[i]}:${targetCol}`
-      const nextKey = `${allRows[i + 1]}:${targetCol}`
+    // Shift cards backward starting from the end
+    for (let i = allTimes.length - 1; i >= insertAtIndex; i--) {
+      const currentKey = cellKey(allTimes[i], targetLane)
+      const nextKey = cellKey(allTimes[i + 1], targetLane)
       const card = sheet.cells.get(currentKey)
-      if (card && i + 1 < allRows.length) {
+      if (card && i + 1 < allTimes.length) {
         sheet.cells.delete(currentKey)
         sheet.cells.set(nextKey, card)
       }
     }
 
     // Step 5: Place card at target
-    const finalKey = `${allRows[insertAtIndex]}:${targetCol}`
+    const finalKey = cellKey(allTimes[insertAtIndex], targetLane)
     sheet.cells.set(finalKey, cardData)
     console.log('[handleDrop] Placed at:', finalKey)
 
-    // Save to undo stack
+    // Save to undo stack (still using row/col for backward compatibility with undo logic)
+    const { timeId: finalTime, laneId: finalLane } = parseCellKey(finalKey)
     undoStack.push({
       type: 'move',
       userId: USER_ID,
       cardId: cardId,
-      fromRow: fromRow,
-      fromCol: fromCol,
-      toRow: allRows[insertAtIndex],
-      toCol: targetCol
+      fromRow: orientation === 'vertical' ? fromTime : fromLane,
+      fromCol: orientation === 'vertical' ? fromLane : fromTime,
+      toRow: orientation === 'vertical' ? finalTime : finalLane,
+      toCol: orientation === 'vertical' ? finalLane : finalTime
     })
     redoStack = []
 
@@ -1913,13 +2037,14 @@
     if (!sheet) return
 
     try {
-      // Get column title
+      // Get lane title
+      const lane = orientation === 'vertical' ? colId : colId
       const columnTitle = shotTitles.get(colId) || `Shot ${colId}`
 
-      // Get all cards in this column
-      const columnCards = rows.map(rowId => {
-        const cellKey = `${rowId}:${colId}`
-        const cell = cellsMap.get(cellKey)
+      // Get all cards in this lane
+      const columnCards = timeline.map(timeId => {
+        const key = cellKey(timeId, lane)
+        const cell = cellsMap.get(key)
         const cardId = cell?.cardId
         return cardId ? cardsMetadata.get(cardId) : null
       }).filter(card => card !== null)
@@ -2088,12 +2213,16 @@
     try {
       console.log('Uploading file:', file.name)
 
+      // Map row/col to time/lane based on orientation
+      const time = orientation === 'vertical' ? rowId : colId
+      const lane = orientation === 'vertical' ? colId : rowId
+
       // Create a temporary loading card immediately
       const tempCardId = `temp_${Date.now()}`
-      const cellKey = `${rowId}:${colId}`
+      const key = cellKey(time, lane)
 
       // Add temporary card to Yjs
-      sheet.cells.set(cellKey, { cardId: tempCardId })
+      sheet.cells.set(key, { cardId: tempCardId })
 
       // Add temporary card metadata with loading state
       const tempCard = {
@@ -2146,7 +2275,7 @@
       cardsMetadata.delete(tempCardId)
 
       // Update Yjs with real card ID
-      sheet.cells.set(cellKey, { cardId: newCard.cardId })
+      sheet.cells.set(key, { cardId: newCard.cardId })
 
       // Add real card metadata to local map - reassign for reactivity
       cardsMetadata = new Map(cardsMetadata.set(newCard.cardId, newCard))
@@ -2163,14 +2292,16 @@
       redoStack = []
       console.log('[handleFileUpload] Saved to undo stack:', undoStack.length)
 
-      console.log('Card added to cell:', cellKey)
+      console.log('Card added to cell:', key)
     } catch (error) {
       console.error('Error uploading file:', error)
       alert('Failed to upload file. Please try again.')
 
       // Clean up temporary card on error
-      const cellKey = `${rowId}:${colId}`
-      sheet.cells.delete(cellKey)
+      const time = orientation === 'vertical' ? rowId : colId
+      const lane = orientation === 'vertical' ? colId : rowId
+      const key = cellKey(time, lane)
+      sheet.cells.delete(key)
       cardsMetadata = new Map(cardsMetadata) // Trigger reactivity
     }
 
@@ -2437,11 +2568,22 @@
         onscroll={syncColumnsScroll}
       >
         {#each displayCols as colId, colIndex (colId)}
-          <!-- Column drop indicator -->
-          {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
-            <div class="column-drop-indicator" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"></div>
-          {/if}
-          <div class="shot-column {draggedColumn === colId ? 'column-dragging' : ''}" style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px">
+          <div class="column-wrapper" animate:flip={{ duration: 300 }}>
+            <!-- Column drop indicator -->
+            {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
+              <div
+                class="column-drop-indicator"
+                style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"
+                ondragover={(e) => { e.preventDefault(); handleColumnDragOver(e, colId); }}
+                ondrop={(e) => { console.log('[frozen drop indicator before ondrop]'); handleColumnDrop(e, colId); }}
+              ></div>
+            {/if}
+            <div
+              class="shot-column {draggedColumn === colId ? 'column-dragging' : ''}"
+              style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px"
+              ondragover={(e) => handleColumnDragOver(e, colId)}
+              ondrop={(e) => handleColumnDrop(e, colId)}
+            >
             <!-- Title and icons on same line -->
             <div class="shot-header-title">
               <input
@@ -2483,10 +2625,10 @@
             </div>
 
             <!-- First card (frozen) -->
-            {#if rows.length > 0}
-              {@const firstRowId = rows[0]}
-              {@const cellKey = `${firstRowId}:${colId}`}
-              {@const cell = cellsMap.get(cellKey)}
+            {#if timeline.length > 0}
+              {@const firstTimeId = timeline[0]}
+              {@const key = cellKey(firstTimeId, colId)}
+              {@const cell = cellsMap.get(key)}
               {@const cardId = cell?.cardId}
               {@const card = cardId ? cardsMetadata.get(cardId) : null}
 
@@ -2546,10 +2688,16 @@
             {/if}
           </div>
 
-          <!-- Column drop indicator after -->
-          {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
-            <div class="column-drop-indicator" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"></div>
-          {/if}
+            <!-- Column drop indicator after -->
+            {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
+              <div
+                class="column-drop-indicator"
+                style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"
+                ondragover={(e) => { e.preventDefault(); handleColumnDragOver(e, colId); }}
+                ondrop={(e) => { console.log('[drop indicator after ondrop]'); handleColumnDrop(e, colId); }}
+              ></div>
+            {/if}
+          </div>
         {/each}
       </div>
       {/if}
@@ -2562,16 +2710,33 @@
         onscroll={syncColumnsScroll}
       >
         {#each displayCols as colId, colIndex (colId)}
-          <!-- Column drop indicator before -->
-          {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
-            <div class="column-drop-indicator" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"></div>
-          {/if}
+          <div class="column-wrapper" animate:flip={{ duration: 300 }}>
+            <!-- Column drop indicator before -->
+            {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
+              <div
+                class="column-drop-indicator"
+                style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"
+                ondragover={(e) => { e.preventDefault(); handleColumnDragOver(e, colId); }}
+                ondrop={(e) => { console.log('[drop indicator ondrop]'); handleColumnDrop(e, colId); }}
+              ></div>
+            {/if}
 
-          <div class="column {draggedColumn === colId ? 'column-dragging' : ''}" style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035}px">
-            <!-- Get all cards in this column (skip first row if sticky) -->
+            <div
+              class="column {draggedColumn === colId ? 'column-dragging' : ''}"
+              style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035}px"
+              ondragover={(e) => {
+                console.log('[column ondragover] colId:', colId, 'isColumnDragging:', isColumnDragging);
+                handleColumnDragOver(e, colId);
+              }}
+              ondrop={(e) => {
+                console.log('[column ondrop] colId:', colId, 'isColumnDragging:', isColumnDragging);
+                handleColumnDrop(e, colId);
+              }}
+            >
+            <!-- Get all cards in this lane (skip first time if sticky) -->
             {#each (stickyTopRow ? displayRows.slice(1) : displayRows) as rowId (rowId)}
-              {@const cellKey = `${rowId}:${colId}`}
-              {@const cell = cellsMap.get(cellKey)}
+              {@const key = cellKey(rowId, colId)}
+              {@const cell = cellsMap.get(key)}
               {@const cardId = cell?.cardId}
               {@const card = cardId ? cardsMetadata.get(cardId) : null}
               {@const isFirstRow = rowId === rows[0]}
@@ -2616,11 +2781,14 @@
               {/if}
 
               <!-- Show placeholder before card if drag preview indicates it -->
-              {#if dragPreview && dragPreview.targetCol === colId && dragPreview.targetRow === rowId && dragPreview.insertBefore}
+              {#if dragPreview && dragPreview.targetLane === colId && dragPreview.targetTime === rowId && dragPreview.insertBefore}
                 <div
                   class="drag-placeholder"
                   style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
-                  ondrop={(e) => handleDrop(e, rowId, colId)}
+                  ondrop={(e) => {
+                    if (isColumnDragging) return;
+                    handleDrop(e, rowId, colId);
+                  }}
                   ondragover={(e) => e.preventDefault()}
                 ></div>
               {/if}
@@ -2631,8 +2799,25 @@
                   style="background-color: {card.thumb_url ? 'rgba(0, 0, 0, 0.3)' : card.color}; width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
                   draggable="true"
                   ondragstart={(e) => !stickyTopRow && isFirstRow ? handleColumnDragStart(e, colId) : handleDragStart(e, rowId, colId, cardId)}
-                  ondragover={(e) => !stickyTopRow && isFirstRow ? handleColumnDragOver(e, colId) : handleDragOver(e, rowId, colId, e.currentTarget)}
-                  ondrop={(e) => !stickyTopRow && isFirstRow ? handleColumnDrop(e, colId) : handleDrop(e, rowId, colId)}
+                  ondragover={(e) => {
+                    console.log('[card ondragover] rowId:', rowId, 'colId:', colId, 'isColumnDragging:', isColumnDragging);
+                    // If dragging a column, prevent default but let it bubble to column container
+                    if (isColumnDragging) {
+                      e.preventDefault();
+                      console.log('[card ondragover] Returning early for column drag');
+                      return;
+                    }
+                    (!stickyTopRow && isFirstRow ? handleColumnDragOver(e, colId) : handleDragOver(e, rowId, colId, e.currentTarget));
+                  }}
+                  ondrop={(e) => {
+                    console.log('[card ondrop] rowId:', rowId, 'colId:', colId, 'isColumnDragging:', isColumnDragging);
+                    // If dragging a column, let it bubble to column container; otherwise handle card drop
+                    if (isColumnDragging) {
+                      console.log('[card ondrop] Returning early for column drag');
+                      return;
+                    }
+                    (!stickyTopRow && isFirstRow ? handleColumnDrop(e, colId) : handleDrop(e, rowId, colId));
+                  }}
                   ondragend={(e) => !stickyTopRow && isFirstRow ? resetColumnDrag() : handleDragEnd(e)}
                   ondblclick={() => handleCardDoubleClick(cardId)}
                 >
@@ -2683,8 +2868,19 @@
                 <div
                   class="blank-cell"
                   style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
-                  ondragover={(e) => handleDragOver(e, rowId, colId, e.currentTarget)}
-                  ondrop={(e) => handleDrop(e, rowId, colId)}
+                  ondragover={(e) => {
+                    // If dragging a column, prevent default but let it bubble
+                    if (isColumnDragging) {
+                      e.preventDefault();
+                      return;
+                    }
+                    handleDragOver(e, rowId, colId, e.currentTarget);
+                  }}
+                  ondrop={(e) => {
+                    // If dragging a column, let it bubble to column container
+                    if (isColumnDragging) return;
+                    handleDrop(e, rowId, colId);
+                  }}
                 >
                   <input
                     type="file"
@@ -2711,21 +2907,30 @@
               {/if}
 
               <!-- Show placeholder after card if drag preview indicates it -->
-              {#if dragPreview && dragPreview.targetCol === colId && dragPreview.targetRow === rowId && !dragPreview.insertBefore}
+              {#if dragPreview && dragPreview.targetLane === colId && dragPreview.targetTime === rowId && !dragPreview.insertBefore}
                 <div
                   class="drag-placeholder"
                   style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
-                  ondrop={(e) => handleDrop(e, rowId, colId)}
+                  ondrop={(e) => {
+                    if (isColumnDragging) return;
+                    handleDrop(e, rowId, colId);
+                  }}
                   ondragover={(e) => e.preventDefault()}
                 ></div>
               {/if}
             {/each}
           </div>
 
-          <!-- Column drop indicator after -->
-          {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
-            <div class="column-drop-indicator" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"></div>
-          {/if}
+            <!-- Column drop indicator after -->
+            {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
+              <div
+                class="column-drop-indicator"
+                style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"
+                ondragover={(e) => { e.preventDefault(); handleColumnDragOver(e, colId); }}
+                ondrop={(e) => { console.log('[scrollable drop indicator after ondrop]'); handleColumnDrop(e, colId); }}
+              ></div>
+            {/if}
+          </div>
         {/each}
       </div>
     </div>
@@ -3375,6 +3580,10 @@
     50% {
       opacity: 1;
     }
+  }
+
+  .column-wrapper {
+    display: contents;
   }
 
   .shot-header-title {
@@ -4409,10 +4618,10 @@
   }
 
   .loading-spinner {
-    width: 50px;
-    height: 50px;
-    border: 4px solid rgba(255, 255, 255, 0.2);
-    border-top: 4px solid white;
+    width: 24px;
+    height: 24px;
+    border: 2px solid rgba(255, 255, 255, 0.2);
+    border-top: 2px solid white;
     border-radius: 50%;
     animation: spin 1s linear infinite;
   }

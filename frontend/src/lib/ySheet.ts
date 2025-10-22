@@ -18,7 +18,46 @@ export interface SheetConnection {
  */
 export function connectSheet(wsUrl: string, sheetId: string): SheetConnection {
   const doc = new Y.Doc()
-  const provider = new WebsocketProvider(wsUrl, sheetId, doc)
+
+  // Configure provider with exponential backoff and max retries
+  const provider = new WebsocketProvider(wsUrl, sheetId, doc, {
+    // Exponential backoff: start at 1s, max at 30s
+    connect: true,
+    // Control reconnection timing
+    maxBackoffTime: 30000, // Max 30 seconds between retries
+    // Add params to the WebSocket URL
+    params: {}
+  })
+
+  // Track reconnection attempts to prevent infinite loops
+  let reconnectAttempts = 0
+  const MAX_RECONNECT_ATTEMPTS = 10
+  let reconnectBackoff = 1000 // Start at 1 second
+
+  provider.on('connection-close', () => {
+    reconnectAttempts++
+    console.warn(`[WebSocket] Connection closed. Attempt ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS}`)
+
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+      console.error('[WebSocket] Max reconnection attempts reached. Stopping reconnection.')
+      provider.disconnect()
+      // Show user-friendly error
+      alert('Lost connection to server. Please refresh the page to reconnect.')
+    } else {
+      // Exponential backoff: double the wait time each attempt, max 30s
+      reconnectBackoff = Math.min(reconnectBackoff * 2, 30000)
+      console.log(`[WebSocket] Will retry in ${reconnectBackoff}ms`)
+    }
+  })
+
+  provider.on('status', ({ status }: { status: string }) => {
+    if (status === 'connected') {
+      // Reset reconnection tracking on successful connection
+      reconnectAttempts = 0
+      reconnectBackoff = 1000
+      console.log('[WebSocket] Connected successfully')
+    }
+  })
 
   const rowOrder = doc.getArray<string>('rowOrder')
   const colOrder = doc.getArray<string>('colOrder')

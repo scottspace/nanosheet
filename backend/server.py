@@ -85,7 +85,7 @@ class NanosheetRoom(YRoom):
         # This avoids triggering on awareness updates
         if GCS_BUCKET:
             def on_change(event):
-                """Called when rowOrder, colOrder, or cells change."""
+                """Called when rowOrder, colOrder, cells, or cardsMetadata change."""
                 logger.info(f"YDoc structure changed in room: {self.room_name}")
                 asyncio.create_task(debounced_save_snapshot(self.room_name, self.ydoc))
 
@@ -93,13 +93,15 @@ class NanosheetRoom(YRoom):
             row_order = self.ydoc.get_array('rowOrder')
             col_order = self.ydoc.get_array('colOrder')
             cells = self.ydoc.get_map('cells')
+            cards_metadata = self.ydoc.get_map('cardsMetadata')
 
             # Observe each structure
             row_order.observe(on_change)
             col_order.observe(on_change)
             cells.observe(on_change)
+            cards_metadata.observe(on_change)
 
-            logger.info(f"Set up observers on rowOrder, colOrder, cells for room: {self.room_name}")
+            logger.info(f"Set up observers on rowOrder, colOrder, cells, cardsMetadata for room: {self.room_name}")
 
         # Now start the room
         await super().start(**kwargs)
