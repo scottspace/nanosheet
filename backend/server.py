@@ -186,9 +186,22 @@ class SafeASGIServer:
 
     def __init__(self, yws_server):
         self.asgi_server = ASGIServer(yws_server)
+        self.yws_server = yws_server
 
     async def __call__(self, scope, receive, send):
         """ASGI application callable."""
+        # Check if WebSocket server is running
+        if not self.yws_server.started.is_set():
+            logger.error("WebSocket server is not running, rejecting connection")
+            # Send WebSocket close immediately
+            if scope["type"] == "websocket":
+                await send({
+                    "type": "websocket.close",
+                    "code": 1011,  # Internal error
+                    "reason": "Server not ready"
+                })
+            return
+
         async def safe_send(message):
             """Wrapper around send that catches close errors."""
             try:
@@ -199,7 +212,22 @@ class SafeASGIServer:
                 else:
                     raise
 
-        await self.asgi_server(scope, receive, safe_send)
+        try:
+            await self.asgi_server(scope, receive, safe_send)
+        except RuntimeError as e:
+            if "WebsocketServer is not running" in str(e):
+                logger.error("WebSocket server stopped unexpectedly")
+                if scope["type"] == "websocket":
+                    try:
+                        await send({
+                            "type": "websocket.close",
+                            "code": 1011,
+                            "reason": "Server stopped"
+                        })
+                    except:
+                        pass  # Already closed
+            else:
+                raise
 
 
 # Mount Yjs WebSocket server using ASGI
