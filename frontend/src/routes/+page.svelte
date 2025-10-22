@@ -14,6 +14,7 @@
     copyCol,
     getAllCardIds
   } from '../lib/ySheet'
+  import VideoMedia from '../lib/VideoMedia.svelte'
 
   // Environment detection - will be set in onMount
   let WS_URL = $state('')
@@ -30,6 +31,10 @@
   let cellsMap: Map<string, { cardId: string }> = $state(new Map())
   let cardsMetadata: Map<string, any> = $state(new Map())
   let shotTitles: Map<string, string> = $state(new Map())
+
+  // Derived arrays that always include one extra phantom column and row for scrolling
+  let displayCols = $derived([...cols, `phantom-col-${cols.length}`])
+  let displayRows = $derived([...rows, `phantom-row-${rows.length}`])
   let loading = $state(true)
   let draggedCard: { rowId: string; colId: string; cardId: string } | null = null
   let dragPreview: { targetCol: string; targetRow: string; insertBefore: boolean } | null = $state(null)
@@ -40,6 +45,9 @@
   let draggedColumn: string | null = null
   let columnDragPreview: { targetColIndex: number; insertBefore: boolean } | null = $state(null)
   let isColumnDragging = $state(false)
+
+  // Column menu state
+  let openColumnMenu: string | null = $state(null)
 
   // Scroll sync refs
   let frozenRowRef: HTMLDivElement | null = null
@@ -63,6 +71,9 @@
   let promptYText: Y.Text | null = null
   let modalTitle = $state('')
   let modalColor = $state('#CCCCCC')
+  let modalMediaUrl = $state<string | null>(null)  // URL of media to display in modal
+  let modalMediaType = $state<string | null>(null)  // "image" or "video"
+  let modalThumbUrl = $state<string | null>(null)  // Thumbnail URL for video poster
   let attachments: any[] = $state([])  // Attachments for current card
 
   // Canvas drawing state
@@ -94,17 +105,21 @@
   const loadedMuteState = typeof localStorage !== 'undefined'
     ? localStorage.getItem('isSoundMuted') === 'true'
     : false
+  const loadedStickyTopRow = typeof localStorage !== 'undefined'
+    ? localStorage.getItem('stickyTopRow') !== 'false'
+    : true
 
   let selectedThumbnailSize = $state(loadedThumbnailSize)
+  let stickyTopRow = $state(loadedStickyTopRow)
   let showThumbnailMenu = $state(false)
   let isSoundMuted = $state(loadedMuteState)
   let openEllipsisMenu: string | null = $state(null) // Track which column's menu is open
 
   // Undo stack - stores operations that can be undone
   interface UndoOperation {
-    type: 'delete' | 'edit' | 'move' | 'deleteColumn' | 'duplicateColumn' | 'reorderColumn'
+    type: 'delete' | 'edit' | 'move' | 'insert' | 'deleteColumn' | 'duplicateColumn' | 'reorderColumn'
     userId: string  // Track which user performed this operation
-    // For delete operations
+    // For delete and insert operations
     rowId?: string
     colId?: string
     cardId?: string
@@ -290,7 +305,27 @@
         console.log('[handleDeleteCard] Saved to undo stack:', undoStack.length)
       }
 
-      deleteCard(sheet, rowId, colId)
+      // Delete the card
+      sheet.cells.delete(cellKey)
+
+      // Shift cards up in this column to fill the gap (Kanban style)
+      const allRows = rows
+      const deletedRowIndex = allRows.indexOf(rowId)
+
+      // Shift all cards below the deleted card up by one row
+      for (let i = deletedRowIndex + 1; i < allRows.length; i++) {
+        const currentKey = `${allRows[i]}:${colId}`
+        const prevKey = `${allRows[i - 1]}:${colId}`
+        const card = sheet.cells.get(currentKey)
+
+        if (card) {
+          // Move card from current row to previous row
+          sheet.cells.delete(currentKey)
+          sheet.cells.set(prevKey, card)
+        }
+      }
+
+      console.log('[handleDeleteCard] Deleted card and shifted column up:', rowId, colId)
     }
   }
 
@@ -338,11 +373,17 @@
   function duplicateColumn(sourceColId: string) {
     if (!sheet) return
 
-    const sourceIndex = cols.indexOf(sourceColId)
+    const colsArray = sheet.colOrder.toArray()
+    const sourceIndex = colsArray.indexOf(sourceColId)
     if (sourceIndex === -1) return
 
-    // Create new column to the right of source
-    const newColId = addCol(sheet)
+    // Generate a new column ID
+    const newColId = `c-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`
+
+    // Insert new column immediately after source column
+    colsArray.splice(sourceIndex + 1, 0, newColId)
+    sheet.colOrder.delete(0, sheet.colOrder.length)
+    sheet.colOrder.push(colsArray)
 
     // Save to undo stack
     undoStack.push({
@@ -363,7 +404,16 @@
       }
     })
 
-    console.log('[duplicateColumn] Duplicated column', sourceColId, 'to', newColId)
+    console.log('[duplicateColumn] Duplicated column', sourceColId, 'to', newColId, 'at index', sourceIndex + 1)
+  }
+
+  function toggleColumnMenu(colId: string, e: MouseEvent) {
+    e.stopPropagation()
+    openColumnMenu = openColumnMenu === colId ? null : colId
+  }
+
+  function closeColumnMenu() {
+    openColumnMenu = null
   }
 
   // Column drag handlers
@@ -512,6 +562,33 @@
     visualColumnOrder = []
   }
 
+  // Handle escape key to cancel drag operations
+  function handleEscapeKey(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      // Cancel card drag
+      if (isDragging || dragPreview || draggedCard) {
+        console.log('[handleEscapeKey] Canceling card drag')
+        isDragging = false
+        dragPreview = null
+        draggedCard = null
+      }
+      // Cancel column drag
+      if (isColumnDragging || columnDragPreview || draggedColumn) {
+        console.log('[handleEscapeKey] Canceling column drag')
+        resetColumnDrag()
+      }
+    }
+  }
+
+  // Set up keyboard event listener
+  $effect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => handleEscapeKey(e)
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  })
+
   // Undo the last operation by the current user
   async function handleUndo() {
     if (undoStack.length === 0) {
@@ -538,32 +615,105 @@
     console.log('[handleUndo] Undoing operation:', operation)
 
     if (operation.type === 'move' && sheet) {
-      // Undo a card move: restore to original position and delete the new row
+      // Undo a card move: reverse all the shift operations
       // Save to redo stack
       redoStack.push(operation)
 
-      // Get the card from the new position
-      const newCellKey = `${operation.toRow}:${operation.toCol}`
-      const card = sheet.cells.get(newCellKey)
+      // Step 1: Remove card from target position
+      const toKey = `${operation.toRow}:${operation.toCol}`
+      const card = sheet.cells.get(toKey)
 
-      if (card) {
-        // Restore card to original position
-        const originalCellKey = `${operation.fromRow}:${operation.fromCol}`
-        sheet.cells.set(originalCellKey, card)
-        console.log('[handleUndo] Restored card to original position:', originalCellKey)
+      if (!card) {
+        console.log('[handleUndo] Card not found at target position')
+        return
       }
 
-      // Delete the new row that was created for the move
-      deleteRow(sheet, operation.toRow)
-      console.log('[handleUndo] Deleted row:', operation.toRow)
+      sheet.cells.delete(toKey)
+      console.log('[handleUndo] Removed card from:', toKey)
+
+      // Step 2: Get all rows and find positions
+      const allRows = rows
+      const fromRowIndex = allRows.indexOf(operation.fromRow)
+      const toRowIndex = allRows.indexOf(operation.toRow)
+
+      // Step 3: Shift cards in target column UP to fill the gap (reverse of step 4 in move)
+      for (let i = toRowIndex + 1; i < allRows.length; i++) {
+        const currentKey = `${allRows[i]}:${operation.toCol}`
+        const prevKey = `${allRows[i - 1]}:${operation.toCol}`
+        const shiftCard = sheet.cells.get(currentKey)
+        if (shiftCard) {
+          sheet.cells.delete(currentKey)
+          sheet.cells.set(prevKey, shiftCard)
+        }
+      }
+
+      // Step 4: Shift cards in source column DOWN from original position (reverse of step 3 in move)
+      for (let i = allRows.length - 1; i > fromRowIndex; i--) {
+        const prevKey = `${allRows[i - 1]}:${operation.fromCol}`
+        const currentKey = `${allRows[i]}:${operation.fromCol}`
+        const shiftCard = sheet.cells.get(prevKey)
+        if (shiftCard && i < allRows.length) {
+          sheet.cells.delete(prevKey)
+          sheet.cells.set(currentKey, shiftCard)
+        }
+      }
+
+      // Step 5: Place card back at original position
+      const fromKey = `${operation.fromRow}:${operation.fromCol}`
+      sheet.cells.set(fromKey, card)
+      console.log('[handleUndo] Restored card to original position:', fromKey)
     } else if (operation.type === 'delete' && sheet) {
       // Save current state (empty cell) to redo stack
       redoStack.push(operation)
 
+      // Shift cards down in this column to make room (reverse of delete)
+      const allRows = rows
+      const restoredRowIndex = allRows.indexOf(operation.rowId)
+
+      // Shift all cards from the restored position down by one row (in reverse order)
+      for (let i = allRows.length - 1; i > restoredRowIndex; i--) {
+        const prevKey = `${allRows[i - 1]}:${operation.colId}`
+        const currentKey = `${allRows[i]}:${operation.colId}`
+        const card = sheet.cells.get(prevKey)
+
+        if (card) {
+          // Move card from previous row to current row
+          sheet.cells.delete(prevKey)
+          sheet.cells.set(currentKey, card)
+        }
+      }
+
       // Re-add the card to the cell
       const cellKey = `${operation.rowId}:${operation.colId}`
       sheet.cells.set(cellKey, { cardId: operation.cardId })
-      console.log('[handleUndo] Restored card to', cellKey)
+      console.log('[handleUndo] Restored card to', cellKey, 'and shifted column down')
+    } else if (operation.type === 'insert' && sheet) {
+      // Undo card insert by deleting it
+      // Save to redo stack
+      redoStack.push(operation)
+
+      // Delete the card from the cell (same as handleDeleteCard but without shift-up)
+      const cellKey = `${operation.rowId}:${operation.colId}`
+      sheet.cells.delete(cellKey)
+
+      // Shift cards up in this column to fill the gap
+      const allRows = rows
+      const deletedRowIndex = allRows.indexOf(operation.rowId)
+
+      // Shift all cards below the deleted card up by one row
+      for (let i = deletedRowIndex + 1; i < allRows.length; i++) {
+        const currentKey = `${allRows[i]}:${operation.colId}`
+        const prevKey = `${allRows[i - 1]}:${operation.colId}`
+        const card = sheet.cells.get(currentKey)
+
+        if (card) {
+          // Move card from current row to previous row
+          sheet.cells.delete(currentKey)
+          sheet.cells.set(prevKey, card)
+        }
+      }
+
+      console.log('[handleUndo] Deleted inserted card from', cellKey, 'and shifted column up')
     } else if (operation.type === 'edit' && operation.previousState) {
       // Get current state before undoing
       const currentCard = cardsMetadata.get(operation.previousState.cardId)
@@ -686,40 +836,105 @@
     console.log('[handleRedo] Redoing operation:', operation)
 
     if (operation.type === 'move' && sheet) {
-      // Redo a card move: remove from original position and recreate in new position
+      // Redo a card move: replay all the shift operations from the original move
       // Save to undo stack
       undoStack.push(operation)
 
-      // Get the card from the original position
-      const originalCellKey = `${operation.fromRow}:${operation.fromCol}`
-      const card = sheet.cells.get(originalCellKey)
+      // Step 1: Remove card from source position
+      const fromKey = `${operation.fromRow}:${operation.fromCol}`
+      const card = sheet.cells.get(fromKey)
 
-      if (card) {
-        // Remove from original position
-        sheet.cells.delete(originalCellKey)
-
-        // Recreate the row and place card in new position
-        const rows = sheet.rowOrder.toArray()
-        const targetIndex = rows.indexOf(operation.toRow)
-
-        if (targetIndex === -1) {
-          // Row doesn't exist, recreate it at the end (shouldn't happen normally)
-          sheet.rowOrder.push([operation.toRow])
-        }
-
-        // Place card in the new position
-        const newCellKey = `${operation.toRow}:${operation.toCol}`
-        sheet.cells.set(newCellKey, card)
-        console.log('[handleRedo] Re-moved card to:', newCellKey)
+      if (!card) {
+        console.log('[handleRedo] Card not found at source position')
+        return
       }
+
+      sheet.cells.delete(fromKey)
+      console.log('[handleRedo] Removed card from:', fromKey)
+
+      // Step 2: Get all rows and find positions
+      const allRows = rows
+      const fromRowIndex = allRows.indexOf(operation.fromRow)
+      const toRowIndex = allRows.indexOf(operation.toRow)
+
+      // Step 3: Shift cards in source column UP to fill the gap
+      for (let i = fromRowIndex + 1; i < allRows.length; i++) {
+        const currentKey = `${allRows[i]}:${operation.fromCol}`
+        const prevKey = `${allRows[i - 1]}:${operation.fromCol}`
+        const shiftCard = sheet.cells.get(currentKey)
+        if (shiftCard) {
+          sheet.cells.delete(currentKey)
+          sheet.cells.set(prevKey, shiftCard)
+        }
+      }
+
+      // Step 4: Shift cards in target column DOWN to make room
+      for (let i = allRows.length - 1; i > toRowIndex; i--) {
+        const prevKey = `${allRows[i - 1]}:${operation.toCol}`
+        const currentKey = `${allRows[i]}:${operation.toCol}`
+        const shiftCard = sheet.cells.get(prevKey)
+        if (shiftCard && i < allRows.length) {
+          sheet.cells.delete(prevKey)
+          sheet.cells.set(currentKey, shiftCard)
+        }
+      }
+
+      // Step 5: Place card at target position
+      const toKey = `${operation.toRow}:${operation.toCol}`
+      sheet.cells.set(toKey, card)
+      console.log('[handleRedo] Re-moved card to:', toKey)
     } else if (operation.type === 'delete' && sheet) {
       // Save to undo stack
       undoStack.push(operation)
 
       // Remove the card from the cell
       const cellKey = `${operation.rowId}:${operation.colId}`
-      deleteCard(sheet, operation.rowId, operation.colId)
-      console.log('[handleRedo] Re-deleted card from', cellKey)
+      sheet.cells.delete(cellKey)
+
+      // Shift cards up in this column to fill the gap (same as handleDeleteCard)
+      const allRows = sheet.rowOrder.toArray()
+      const deletedRowIndex = allRows.indexOf(operation.rowId)
+
+      // Shift all cards below the deleted card up by one row
+      for (let i = deletedRowIndex + 1; i < allRows.length; i++) {
+        const currentKey = `${allRows[i]}:${operation.colId}`
+        const prevKey = `${allRows[i - 1]}:${operation.colId}`
+        const card = sheet.cells.get(currentKey)
+
+        if (card) {
+          // Move card from current row to previous row
+          sheet.cells.delete(currentKey)
+          sheet.cells.set(prevKey, card)
+        }
+      }
+
+      console.log('[handleRedo] Re-deleted card from', cellKey, 'and shifted column up')
+    } else if (operation.type === 'insert' && sheet) {
+      // Redo card insert by re-adding it to the cell
+      // Save to undo stack
+      undoStack.push(operation)
+
+      // Shift cards down in this column to make room (reverse of undo insert)
+      const allRows = sheet.rowOrder.toArray()
+      const restoredRowIndex = allRows.indexOf(operation.rowId)
+
+      // Shift all cards from the restored position down by one row (in reverse order)
+      for (let i = allRows.length - 1; i > restoredRowIndex; i--) {
+        const prevKey = `${allRows[i - 1]}:${operation.colId}`
+        const currentKey = `${allRows[i]}:${operation.colId}`
+        const card = sheet.cells.get(prevKey)
+
+        if (card) {
+          // Move card from previous row to current row
+          sheet.cells.delete(prevKey)
+          sheet.cells.set(currentKey, card)
+        }
+      }
+
+      // Re-add the card to the cell
+      const cellKey = `${operation.rowId}:${operation.colId}`
+      sheet.cells.set(cellKey, { cardId: operation.cardId })
+      console.log('[handleRedo] Re-inserted card to', cellKey, 'and shifted column down')
     } else if (operation.type === 'edit' && operation.previousState) {
       // Get current state before redoing
       const currentCard = cardsMetadata.get(operation.previousState.cardId)
@@ -842,11 +1057,15 @@
 
   function handleDragOver(event: DragEvent, targetRow: string, targetCol: string, cardElement: HTMLElement) {
     event.preventDefault()
-    if (!draggedCard || !isDragging) return
+    if (!draggedCard || !isDragging) {
+      console.log('[handleDragOver] Skipped - no draggedCard or not dragging')
+      return
+    }
 
     // Skip frozen row as drop target
     if (rows.length > 0 && targetRow === rows[0]) {
       dragPreview = null
+      console.log('[handleDragOver] Skipped - frozen row')
       return
     }
 
@@ -872,6 +1091,8 @@
       insertBefore
     }
 
+    console.log('[handleDragOver] Updated preview:', { targetRow, targetCol, insertBefore })
+
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = 'move'
     }
@@ -887,6 +1108,7 @@
   function handleDrop(event: DragEvent, toRow: string, toCol: string) {
     event.preventDefault()
     if (!sheet || !draggedCard || !dragPreview) {
+      console.log('[handleDrop] Missing required data:', { hasSheet: !!sheet, hasDraggedCard: !!draggedCard, hasDragPreview: !!dragPreview })
       isDragging = false
       dragPreview = null
       draggedCard = null
@@ -896,24 +1118,88 @@
     const { rowId: fromRow, colId: fromCol, cardId } = draggedCard
     const { targetRow, targetCol, insertBefore } = dragPreview
 
-    console.log('[handleDrop] Dropping card:', { fromRow, fromCol, targetRow, targetCol, insertBefore })
+    console.log('[handleDrop] Dropping card:', {
+      fromRow, fromCol, cardId,
+      targetRow, targetCol, insertBefore,
+      dropEventRow: toRow, dropEventCol: toCol
+    })
 
-    // Insert the card (creates new row, doesn't replace)
-    const newRowId = insertCard(sheet, fromRow, fromCol, targetRow, targetCol, insertBefore)
+    // Kanban-style move: shift cards within columns
+    // Step 1: Remove card from source
+    const fromKey = `${fromRow}:${fromCol}`
+    const cardData = sheet.cells.get(fromKey)
 
-    if (newRowId) {
-      // Save to undo stack with both old and new positions
-      undoStack.push({
-        type: 'move',
-        userId: USER_ID,
-        cardId: cardId,
-        fromRow: fromRow,
-        fromCol: fromCol,
-        toRow: newRowId,
-        toCol: targetCol
-      })
-      redoStack = []
+    if (!cardData) {
+      console.log('[handleDrop] Card not found at source')
+      isDragging = false
+      dragPreview = null
+      draggedCard = null
+      return
     }
+
+    sheet.cells.delete(fromKey)
+    console.log('[handleDrop] Removed from:', fromKey)
+
+    // Step 2: Get all rows and find positions
+    const allRows = rows
+    const fromRowIndex = allRows.indexOf(fromRow)
+    const targetRowIndex = allRows.indexOf(targetRow)
+
+    // Step 3: Shift cards in source column UP to fill the gap
+    if (fromCol === targetCol) {
+      // Same column - just need to shift and reorder
+      for (let i = fromRowIndex + 1; i < allRows.length; i++) {
+        const currentKey = `${allRows[i]}:${fromCol}`
+        const prevKey = `${allRows[i - 1]}:${fromCol}`
+        const card = sheet.cells.get(currentKey)
+        if (card) {
+          sheet.cells.delete(currentKey)
+          sheet.cells.set(prevKey, card)
+        }
+      }
+    } else {
+      // Different columns - shift source column UP
+      for (let i = fromRowIndex + 1; i < allRows.length; i++) {
+        const currentKey = `${allRows[i]}:${fromCol}`
+        const prevKey = `${allRows[i - 1]}:${fromCol}`
+        const card = sheet.cells.get(currentKey)
+        if (card) {
+          sheet.cells.delete(currentKey)
+          sheet.cells.set(prevKey, card)
+        }
+      }
+    }
+
+    // Step 4: Shift cards in target column DOWN from target position
+    const insertAtIndex = insertBefore ? targetRowIndex : targetRowIndex + 1
+
+    // Shift cards down starting from the bottom
+    for (let i = allRows.length - 1; i >= insertAtIndex; i--) {
+      const currentKey = `${allRows[i]}:${targetCol}`
+      const nextKey = `${allRows[i + 1]}:${targetCol}`
+      const card = sheet.cells.get(currentKey)
+      if (card && i + 1 < allRows.length) {
+        sheet.cells.delete(currentKey)
+        sheet.cells.set(nextKey, card)
+      }
+    }
+
+    // Step 5: Place card at target
+    const finalKey = `${allRows[insertAtIndex]}:${targetCol}`
+    sheet.cells.set(finalKey, cardData)
+    console.log('[handleDrop] Placed at:', finalKey)
+
+    // Save to undo stack
+    undoStack.push({
+      type: 'move',
+      userId: USER_ID,
+      cardId: cardId,
+      fromRow: fromRow,
+      fromCol: fromCol,
+      toRow: allRows[insertAtIndex],
+      toCol: targetCol
+    })
+    redoStack = []
 
     // Clear drag state
     isDragging = false
@@ -967,6 +1253,16 @@
       localStorage.setItem('thumbnailSize', index.toString())
     }
     console.log('[selectThumbnailSize] Selected size:', THUMBNAIL_SIZES[index].label)
+  }
+
+  // Toggle sticky top row
+  function toggleStickyTopRow() {
+    stickyTopRow = !stickyTopRow
+    // Save to localStorage
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('stickyTopRow', stickyTopRow.toString())
+    }
+    console.log('[toggleStickyTopRow] Sticky top row is now:', stickyTopRow ? 'enabled' : 'disabled')
   }
 
   // Toggle sound mute/unmute
@@ -1147,6 +1443,9 @@
     modalTitle = card?.title || ''
     modalColor = card?.color || '#CCCCCC'
     modalPrompt = card?.prompt || ''
+    modalMediaUrl = card?.media_url || null  // Display the full media in modal
+    modalMediaType = card?.media_type || null  // "image" or "video"
+    modalThumbUrl = card?.thumb_url || null  // Thumbnail for video poster
     attachments = card?.attachments || []
 
     // Set up Yjs Text for collaborative prompt editing
@@ -1741,6 +2040,144 @@
     }
   }
 
+  // Handle file upload for blank cell
+  async function handleFileUpload(e: Event, rowId: string, colId: string) {
+    const target = e.target as HTMLInputElement
+    const file = target.files?.[0]
+    if (!file || !sheet) return
+
+    // If this is a phantom column, create a real column first
+    let actualColId = colId
+    if (colId.startsWith('phantom-col-')) {
+      console.log('Creating new column for phantom column:', colId)
+      actualColId = addCol(sheet)
+    }
+
+    // If this is a phantom row, create a real row first
+    let actualRowId = rowId
+    if (rowId.startsWith('phantom-row-')) {
+      console.log('Creating new row for phantom row:', rowId)
+      actualRowId = addRow(sheet)
+    }
+
+    // Update references to use actual IDs
+    rowId = actualRowId
+    colId = actualColId
+
+    // Validate file type - allow images and videos
+    const allowedTypes = [
+      'image/png', 'image/jpeg', 'image/jpg', 'image/webp', 'image/gif',
+      'video/mp4', 'video/quicktime', 'video/webm'
+    ]
+    if (!allowedTypes.includes(file.type)) {
+      alert('Please upload an image (PNG, JPEG, WebP, GIF) or video (MP4, MOV, WebM) file')
+      target.value = ''
+      return
+    }
+
+    // Check file size (max 10MB for images, 100MB for videos)
+    const isVideo = file.type.startsWith('video/')
+    const maxSize = isVideo ? 100 * 1024 * 1024 : 10 * 1024 * 1024
+    if (file.size > maxSize) {
+      const maxMB = isVideo ? '100MB' : '10MB'
+      alert(`File size must be less than ${maxMB}`)
+      target.value = ''
+      return
+    }
+
+    try {
+      console.log('Uploading file:', file.name)
+
+      // Create a temporary loading card immediately
+      const tempCardId = `temp_${Date.now()}`
+      const cellKey = `${rowId}:${colId}`
+
+      // Add temporary card to Yjs
+      sheet.cells.set(cellKey, { cardId: tempCardId })
+
+      // Add temporary card metadata with loading state
+      const tempCard = {
+        cardId: tempCardId,
+        title: 'Uploading...',
+        color: '#1a1a1a',
+        isLoading: true, // Flag to show loading spinner
+        createdAt: new Date().toISOString()
+      }
+      cardsMetadata = new Map(cardsMetadata.set(tempCardId, tempCard))
+
+      // Create FormData for upload
+      const formData = new FormData()
+      formData.append('file', file)
+
+      // Upload to backend
+      const response = await fetch(`${API_URL}/api/media/upload`, {
+        method: 'POST',
+        body: formData
+      })
+
+      if (!response.ok) {
+        throw new Error('Upload failed')
+      }
+
+      const uploadResult = await response.json()
+      console.log('Upload result:', uploadResult)
+
+      // Create a new card with the media URLs
+      const cardResponse = await fetch(`${API_URL}/api/cards`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: file.name.split('.')[0], // Use filename without extension as title
+          color: '#1a1a1a', // Dark color for media cards
+          media_url: uploadResult.media_url,
+          thumb_url: uploadResult.thumb_url,
+          media_type: uploadResult.media_type // "image" or "video"
+        })
+      })
+
+      if (!cardResponse.ok) {
+        throw new Error('Failed to create card')
+      }
+
+      const newCard = await cardResponse.json()
+      console.log('Created card:', newCard)
+
+      // Remove temporary card from metadata
+      cardsMetadata.delete(tempCardId)
+
+      // Update Yjs with real card ID
+      sheet.cells.set(cellKey, { cardId: newCard.cardId })
+
+      // Add real card metadata to local map - reassign for reactivity
+      cardsMetadata = new Map(cardsMetadata.set(newCard.cardId, newCard))
+
+      // Save to undo stack
+      undoStack.push({
+        type: 'insert',
+        userId: USER_ID,
+        rowId: rowId,
+        colId: colId,
+        cardId: newCard.cardId
+      })
+      // Clear redo stack on new action
+      redoStack = []
+      console.log('[handleFileUpload] Saved to undo stack:', undoStack.length)
+
+      console.log('Card added to cell:', cellKey)
+    } catch (error) {
+      console.error('Error uploading file:', error)
+      alert('Failed to upload file. Please try again.')
+
+      // Clean up temporary card on error
+      const cellKey = `${rowId}:${colId}`
+      sheet.cells.delete(cellKey)
+      cardsMetadata = new Map(cardsMetadata) // Trigger reactivity
+    }
+
+    // Reset input
+    target.value = ''
+  }
+
   // Sync horizontal scroll between frozen row and columns container
   function syncColumnsScroll(e: Event) {
     if (frozenRowRef && columnsContainerRef) {
@@ -1755,29 +2192,21 @@
 
   // Mount/unmount
   onMount(async () => {
-    // Set URLs at runtime in the browser
+    // Detect environment and set URLs at runtime
     const isProduction = window.location.hostname !== 'localhost'
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+
+    // Auto-detect URLs based on current location
+    WS_URL = isProduction ? `${protocol}//${window.location.host}/yjs` : 'ws://localhost:8000/yjs'
+    API_URL = isProduction ? `${window.location.protocol}//${window.location.host}` : 'http://localhost:8000'
 
     console.log('[Environment Detection]', {
       hostname: window.location.hostname,
       isProduction,
       protocol: window.location.protocol,
-      wsProtocol: protocol,
-      envVars: {
-        VITE_YWS: import.meta.env.VITE_YWS,
-        VITE_API_URL: import.meta.env.VITE_API_URL
-      }
+      WS_URL,
+      API_URL
     })
-
-    // Only use environment variables if they're actually set (not undefined or empty)
-    const envWsUrl = import.meta.env.VITE_YWS as string
-    const envApiUrl = import.meta.env.VITE_API_URL as string
-
-    WS_URL = (envWsUrl && envWsUrl.trim()) || (isProduction ? `${protocol}//${window.location.host}/yjs` : 'ws://localhost:8000/yjs')
-    API_URL = (envApiUrl && envApiUrl.trim()) || (isProduction ? `${window.location.protocol}//${window.location.host}` : 'http://localhost:8000')
-
-    console.log('[URLs Set]', { WS_URL, API_URL })
     console.log('Connecting to WebSocket:', WS_URL, 'Sheet ID:', SHEET_ID)
 
     // Add keyboard event listener
@@ -1951,21 +2380,10 @@
           <div class="ellipsis-menu">
             <button
               class="ellipsis-menu-item"
-              onclick={() => handleMenuAction('toolbar', 'Cure Cancer')}
+              onclick={() => { toggleStickyTopRow(); toggleEllipsisMenu('toolbar'); }}
             >
-              Cure Cancer
-            </button>
-            <button
-              class="ellipsis-menu-item"
-              onclick={() => handleMenuAction('toolbar', 'World Peace')}
-            >
-              World Peace
-            </button>
-            <button
-              class="ellipsis-menu-item"
-              onclick={() => handleMenuAction('toolbar', 'More Cowbell')}
-            >
-              More Cowbell
+              <span class="menu-checkbox">{stickyTopRow ? '✓' : ''}</span>
+              Sticky top row
             </button>
           </div>
         {/if}
@@ -2009,40 +2427,59 @@
   {#if loading}
     <div class="loading">Loading shots...</div>
   {:else}
-    <div class="sheet-view">
+    <div class="sheet-view" onclick={closeColumnMenu}>
       <!-- Frozen header row with shot titles -->
+      {#if stickyTopRow}
       <div
         bind:this={frozenRowRef}
         class="frozen-row"
         style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px"
         onscroll={syncColumnsScroll}
       >
-        {#each cols as colId, colIndex (colId)}
+        {#each displayCols as colId, colIndex (colId)}
           <!-- Column drop indicator -->
           {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
-            <div class="column-drop-indicator"></div>
+            <div class="column-drop-indicator" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"></div>
           {/if}
-          <div class="shot-column {draggedColumn === colId ? 'column-dragging' : ''}" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px">
+          <div class="shot-column {draggedColumn === colId ? 'column-dragging' : ''}" style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px">
             <!-- Title and icons on same line -->
             <div class="shot-header-title">
               <input
                 type="text"
                 class="shot-title-input"
-                value={shotTitles.get(colId) || `Shot ${colId.replace('c-', '').replace('media', '1').replace('alt', '2').replace('notes', '3')}`}
-                placeholder="Shot title"
+                value={colId.startsWith('phantom-') ? '' : (shotTitles.get(colId) || `Shot ${colId.replace('c-', '').replace('media', '1').replace('alt', '2').replace('notes', '3')}`)}
+                placeholder={colId.startsWith('phantom-') ? 'New column' : 'Shot title'}
                 onchange={(e) => handleShotTitleChange(colId, e.currentTarget.value)}
+                disabled={colId.startsWith('phantom-')}
               />
-              <div class="shot-header-icons">
-                <button class="icon-btn-header" title="Duplicate column" onclick={() => duplicateColumn(colId)}>
-                  <span class="material-symbols-outlined">content_copy</span>
+              {#if !colId.startsWith('phantom-')}
+              <div class="shot-header-menu">
+                <button class="icon-btn-header menu-btn" title="Column options" onclick={(e) => toggleColumnMenu(colId, e)}>
+                  <span class="material-symbols-outlined">more_vert</span>
                 </button>
-                <button class="icon-btn-header" title="Add comment">
-                  <span class="material-symbols-outlined">comment</span>
-                </button>
-                <button class="icon-btn-header" title="Export" onclick={() => handleColumnDownload(colId)}>
-                  <span class="material-symbols-outlined">file_download</span>
-                </button>
+
+                {#if openColumnMenu === colId}
+                  <div class="column-dropdown-menu" onclick={(e) => e.stopPropagation()}>
+                    <button class="menu-item" onclick={() => { duplicateColumn(colId); closeColumnMenu(); }}>
+                      <span class="material-symbols-outlined">content_copy</span>
+                      <span>Duplicate</span>
+                    </button>
+                    <button class="menu-item" onclick={closeColumnMenu}>
+                      <span class="material-symbols-outlined">comment</span>
+                      <span>Comment</span>
+                    </button>
+                    <button class="menu-item" onclick={() => { handleColumnDownload(colId); closeColumnMenu(); }}>
+                      <span class="material-symbols-outlined">file_download</span>
+                      <span>Download</span>
+                    </button>
+                    <button class="menu-item delete-item" onclick={() => { deleteColumn(colId); closeColumnMenu(); }}>
+                      <span class="material-symbols-outlined">delete</span>
+                      <span>Delete</span>
+                    </button>
+                  </div>
+                {/if}
               </div>
+              {/if}
             </div>
 
             <!-- First card (frozen) -->
@@ -2056,7 +2493,7 @@
               {#if card}
                 <div
                   class="shot-card column-drag-handle"
-                  style="background-color: {card.color}; width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
+                  style="background-color: {card.thumb_url ? 'rgba(0, 0, 0, 0.3)' : card.color}; width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
                   draggable="true"
                   ondragstart={(e) => handleColumnDragStart(e, colId)}
                   ondragover={(e) => handleColumnDragOver(e, colId)}
@@ -2064,19 +2501,37 @@
                   ondragend={resetColumnDrag}
                   ondblclick={() => handleCardDoubleClick(cardId)}
                 >
+                  {#if card.isLoading}
+                    <!-- Loading spinner -->
+                    <div class="upload-loading">
+                      <div class="loading-spinner"></div>
+                    </div>
+                  {:else if card.media_type === 'video' && card.media_url && card.thumb_url}
+                    <div ondragstart={(e) => e.preventDefault()}>
+                      <VideoMedia src={card.media_url} thumbnail={card.thumb_url} />
+                    </div>
+                  {:else if card.thumb_url}
+                    <img
+                      src={card.thumb_url}
+                      alt={card.title}
+                      class="card-thumbnail"
+                      loading="lazy"
+                      decoding="async"
+                      ondragstart={(e) => e.preventDefault()}
+                    />
+                  {/if}
+                  {#if !card.thumb_url && !card.media_url && !card.isLoading}
                   <div class="card-title-container">
-                    {#if card.number}
-                      <span class="card-number">{card.number}</span>
-                    {/if}
                     <input
                       type="text"
                       class="shot-title-input card-title-input"
-                      value={card.title}
+                      value={card.number ? `${card.title} ${card.number}` : card.title}
                       oninput={(e) => handleCardTitleInput(cardId, e.currentTarget.value)}
                       onchange={(e) => handleCardTitleChange(cardId, e.currentTarget.value)}
                       onclick={(e) => e.stopPropagation()}
                     />
                   </div>
+                  {/if}
                   <button
                     class="btn-delete"
                     onclick={(e) => {
@@ -2093,10 +2548,11 @@
 
           <!-- Column drop indicator after -->
           {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
-            <div class="column-drop-indicator"></div>
+            <div class="column-drop-indicator" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"></div>
           {/if}
         {/each}
       </div>
+      {/if}
 
       <!-- Scrollable columns area -->
       <div
@@ -2105,49 +2561,112 @@
         style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px"
         onscroll={syncColumnsScroll}
       >
-        {#each cols as colId, colIndex (colId)}
+        {#each displayCols as colId, colIndex (colId)}
           <!-- Column drop indicator before -->
           {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
-            <div class="column-drop-indicator"></div>
+            <div class="column-drop-indicator" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"></div>
           {/if}
 
-          <div class="column {draggedColumn === colId ? 'column-dragging' : ''}" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035}px">
-            <!-- Get all cards in this column (skip first row) -->
-            {#each rows.slice(1) as rowId (rowId)}
+          <div class="column {draggedColumn === colId ? 'column-dragging' : ''}" style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035}px">
+            <!-- Get all cards in this column (skip first row if sticky) -->
+            {#each (stickyTopRow ? displayRows.slice(1) : displayRows) as rowId (rowId)}
               {@const cellKey = `${rowId}:${colId}`}
               {@const cell = cellsMap.get(cellKey)}
               {@const cardId = cell?.cardId}
               {@const card = cardId ? cardsMetadata.get(cardId) : null}
+              {@const isFirstRow = rowId === rows[0]}
+
+              <!-- Show shot header if this is first row and sticky is disabled -->
+              {#if !stickyTopRow && isFirstRow && !colId.startsWith('phantom-')}
+                <div class="shot-header-title">
+                  <input
+                    type="text"
+                    class="shot-title-input"
+                    value={shotTitles.get(colId) || `Shot ${colId.replace('c-', '').replace('media', '1').replace('alt', '2').replace('notes', '3')}`}
+                    placeholder="Shot title"
+                    onchange={(e) => handleShotTitleChange(colId, e.currentTarget.value)}
+                  />
+                  <div class="shot-header-menu">
+                    <button class="icon-btn-header menu-btn" title="Column options" onclick={(e) => toggleColumnMenu(colId, e)}>
+                      <span class="material-symbols-outlined">more_vert</span>
+                    </button>
+
+                    {#if openColumnMenu === colId}
+                      <div class="column-dropdown-menu" onclick={(e) => e.stopPropagation()}>
+                        <button class="menu-item" onclick={() => { duplicateColumn(colId); closeColumnMenu(); }}>
+                          <span class="material-symbols-outlined">content_copy</span>
+                          <span>Duplicate</span>
+                        </button>
+                        <button class="menu-item" onclick={closeColumnMenu}>
+                          <span class="material-symbols-outlined">comment</span>
+                          <span>Comment</span>
+                        </button>
+                        <button class="menu-item" onclick={() => { handleColumnDownload(colId); closeColumnMenu(); }}>
+                          <span class="material-symbols-outlined">file_download</span>
+                          <span>Download</span>
+                        </button>
+                        <button class="menu-item delete-item" onclick={() => { deleteColumn(colId); closeColumnMenu(); }}>
+                          <span class="material-symbols-outlined">delete</span>
+                          <span>Delete</span>
+                        </button>
+                      </div>
+                    {/if}
+                  </div>
+                </div>
+              {/if}
 
               <!-- Show placeholder before card if drag preview indicates it -->
               {#if dragPreview && dragPreview.targetCol === colId && dragPreview.targetRow === rowId && dragPreview.insertBefore}
-                <div class="drag-placeholder" style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"></div>
+                <div
+                  class="drag-placeholder"
+                  style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
+                  ondrop={(e) => handleDrop(e, rowId, colId)}
+                  ondragover={(e) => e.preventDefault()}
+                ></div>
               {/if}
 
               {#if card}
                 <div
-                  class="shot-card {isDragging && draggedCard?.cardId === cardId ? 'dragging' : ''}"
-                  style="background-color: {card.color}; width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
+                  class="shot-card {isDragging && draggedCard?.cardId === cardId ? 'dragging' : ''} {!stickyTopRow && isFirstRow ? 'column-drag-handle' : ''}"
+                  style="background-color: {card.thumb_url ? 'rgba(0, 0, 0, 0.3)' : card.color}; width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
                   draggable="true"
-                  ondragstart={(e) => handleDragStart(e, rowId, colId, cardId)}
-                  ondragover={(e) => handleDragOver(e, rowId, colId, e.currentTarget)}
-                  ondrop={(e) => handleDrop(e, rowId, colId)}
-                  ondragend={(e) => handleDragEnd(e)}
+                  ondragstart={(e) => !stickyTopRow && isFirstRow ? handleColumnDragStart(e, colId) : handleDragStart(e, rowId, colId, cardId)}
+                  ondragover={(e) => !stickyTopRow && isFirstRow ? handleColumnDragOver(e, colId) : handleDragOver(e, rowId, colId, e.currentTarget)}
+                  ondrop={(e) => !stickyTopRow && isFirstRow ? handleColumnDrop(e, colId) : handleDrop(e, rowId, colId)}
+                  ondragend={(e) => !stickyTopRow && isFirstRow ? resetColumnDrag() : handleDragEnd(e)}
                   ondblclick={() => handleCardDoubleClick(cardId)}
                 >
+                  {#if card.isLoading}
+                    <!-- Loading spinner -->
+                    <div class="upload-loading">
+                      <div class="loading-spinner"></div>
+                    </div>
+                  {:else if card.media_type === 'video' && card.media_url && card.thumb_url}
+                    <div ondragstart={(e) => e.preventDefault()}>
+                      <VideoMedia src={card.media_url} thumbnail={card.thumb_url} />
+                    </div>
+                  {:else if card.thumb_url}
+                    <img
+                      src={card.thumb_url}
+                      alt={card.title}
+                      class="card-thumbnail"
+                      loading="lazy"
+                      decoding="async"
+                      ondragstart={(e) => e.preventDefault()}
+                    />
+                  {/if}
+                  {#if !card.thumb_url && !card.media_url && !card.isLoading}
                   <div class="card-title-container">
-                    {#if card.number}
-                      <span class="card-number">{card.number}</span>
-                    {/if}
                     <input
                       type="text"
                       class="shot-title-input card-title-input"
-                      value={card.title}
+                      value={card.number ? `${card.title} ${card.number}` : card.title}
                       oninput={(e) => handleCardTitleInput(cardId, e.currentTarget.value)}
                       onchange={(e) => handleCardTitleChange(cardId, e.currentTarget.value)}
                       onclick={(e) => e.stopPropagation()}
                     />
                   </div>
+                  {/if}
                   <button
                     class="btn-delete"
                     onclick={(e) => {
@@ -2158,18 +2677,54 @@
                     ×
                   </button>
                 </div>
+              {:else}
+                <!-- Blank cell with upload/generate icons on hover -->
+
+                <div
+                  class="blank-cell"
+                  style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
+                  ondragover={(e) => handleDragOver(e, rowId, colId, e.currentTarget)}
+                  ondrop={(e) => handleDrop(e, rowId, colId)}
+                >
+                  <input
+                    type="file"
+                    id="upload-{rowId}-{colId}"
+                    accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,video/mp4,video/quicktime,video/webm"
+                    style="display: none"
+                    onchange={(e) => handleFileUpload(e, rowId, colId)}
+                  />
+                  <button
+                    class="cell-action-btn upload-btn"
+                    title="Upload media"
+                    onclick={() => document.getElementById(`upload-${rowId}-${colId}`)?.click()}
+                  >
+                    <span class="material-symbols-outlined">upload</span>
+                  </button>
+                  <button
+                    class="cell-action-btn generate-btn"
+                    title="Generate (coming soon)"
+                    disabled
+                  >
+                    <span class="material-symbols-outlined">add</span>
+                  </button>
+                </div>
               {/if}
 
               <!-- Show placeholder after card if drag preview indicates it -->
               {#if dragPreview && dragPreview.targetCol === colId && dragPreview.targetRow === rowId && !dragPreview.insertBefore}
-                <div class="drag-placeholder" style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"></div>
+                <div
+                  class="drag-placeholder"
+                  style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
+                  ondrop={(e) => handleDrop(e, rowId, colId)}
+                  ondragover={(e) => e.preventDefault()}
+                ></div>
               {/if}
             {/each}
           </div>
 
           <!-- Column drop indicator after -->
           {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
-            <div class="column-drop-indicator"></div>
+            <div class="column-drop-indicator" style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"></div>
           {/if}
         {/each}
       </div>
@@ -2192,6 +2747,16 @@
           />
 
           <div class="modal-card-preview" style="background-color: {modalColor}">
+            {#if modalMediaType === 'video' && modalMediaUrl && modalThumbUrl}
+              <VideoMedia src={modalMediaUrl} thumbnail={modalThumbUrl} />
+            {:else if modalMediaUrl}
+              <img
+                src={modalMediaUrl}
+                alt={modalTitle}
+                class="modal-media-image"
+                loading="eager"
+              />
+            {/if}
             <canvas
               bind:this={canvasRef}
               class="sketch-canvas"
@@ -2292,9 +2857,9 @@
               <label class="modal-label">Attachments</label>
               <div class="attachments-gallery">
                 <!-- Upload button -->
-                <label class="attachment-upload-btn" title="Upload attachment">
+                <label class="attachment-upload-btn" title="Upload image or video">
                   <span class="material-symbols-outlined">add_photo_alternate</span>
-                  <input type="file" accept="image/*" style="display: none;" onchange={handleAttachmentUpload} />
+                  <input type="file" accept="image/*,video/mp4,video/quicktime,video/webm" style="display: none;" onchange={handleAttachmentUpload} />
                 </label>
 
                 <!-- Attachment thumbnails -->
@@ -2700,7 +3265,7 @@
   .btn-delete {
     position: absolute;
     top: 8px;
-    left: 8px;
+    right: 8px;
     padding: 0;
     width: 26px;
     height: 26px;
@@ -2746,12 +3311,11 @@
   /* Frozen Row - Shot Headers */
   .frozen-row {
     display: flex;
-    gap: 1.5rem;
     padding-bottom: 2.5rem;
     border-bottom: 2px solid rgba(255, 255, 255, 0.15);
     margin-bottom: 2.5rem;
     overflow-x: auto;
-    overflow-y: hidden;
+    overflow-y: visible;
     scrollbar-width: none; /* Firefox */
     -ms-overflow-style: none; /* IE/Edge */
   }
@@ -2765,6 +3329,8 @@
     flex-direction: column;
     gap: 0.5rem;
     transition: opacity 0.2s ease, transform 0.2s ease;
+    flex-shrink: 0;
+    box-sizing: border-box;
   }
 
   .shot-column.column-dragging {
@@ -2792,13 +3358,14 @@
   }
 
   .column-drop-indicator {
-    width: 4px;
-    min-width: 4px;
-    background: rgba(100, 150, 255, 0.8);
-    border-radius: 2px;
-    box-shadow: 0 0 8px rgba(100, 150, 255, 0.6);
+    min-width: var(--column-width, 320px);
+    background: rgba(100, 150, 255, 0.08);
+    border: 2px solid rgba(100, 150, 255, 0.4);
+    border-radius: 8px;
+    box-shadow: 0 0 0 1px rgba(100, 150, 255, 0.2), 0 4px 16px rgba(100, 150, 255, 0.2);
     align-self: stretch;
-    animation: pulse 0.6s ease-in-out infinite;
+    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    animation: pulse 1.5s ease-in-out infinite;
   }
 
   @keyframes pulse {
@@ -2816,6 +3383,8 @@
     justify-content: space-between;
     margin-bottom: 0.5rem;
     gap: 0.5rem;
+    width: 100%;
+    max-width: 100%;
   }
 
   .shot-title-input {
@@ -2894,9 +3463,9 @@
     text-align: right;
   }
 
-  .shot-header-icons {
+  .shot-header-menu {
+    position: relative;
     display: flex;
-    gap: 0.25rem;
     flex-shrink: 0;
     align-items: center;
   }
@@ -2923,6 +3492,62 @@
 
   .icon-btn-header .material-symbols-outlined {
     font-size: 20px;
+  }
+
+  .column-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    background: rgba(20, 20, 20, 0.98);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    min-width: 160px;
+    padding: 4px;
+    z-index: 1000;
+    backdrop-filter: blur(10px);
+  }
+
+  .column-dropdown-menu .menu-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 8px 12px;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: rgba(255, 255, 255, 0.9);
+    cursor: pointer;
+    transition: all 0.15s;
+    text-align: left;
+    font-size: 14px;
+  }
+
+  .column-dropdown-menu .menu-item:hover {
+    background: rgba(255, 255, 255, 0.1);
+  }
+
+  .column-dropdown-menu .menu-item .material-symbols-outlined {
+    font-size: 18px;
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  .column-dropdown-menu .menu-item span:last-child {
+    flex: 1;
+  }
+
+  .column-dropdown-menu .menu-item.delete-item {
+    color: rgba(255, 100, 100, 0.9);
+  }
+
+  .column-dropdown-menu .menu-item.delete-item:hover {
+    background: rgba(255, 100, 100, 0.15);
+    color: rgba(255, 120, 120, 1);
+  }
+
+  .column-dropdown-menu .menu-item.delete-item .material-symbols-outlined {
+    color: rgba(255, 100, 100, 0.8);
   }
 
   .ellipsis-btn {
@@ -2969,10 +3594,17 @@
     color: rgba(255, 255, 255, 0.95);
   }
 
+  .menu-checkbox {
+    display: inline-block;
+    width: 1.2em;
+    margin-right: 0.5em;
+    text-align: center;
+    color: rgba(255, 255, 255, 0.9);
+  }
+
   /* Columns Container */
   .columns-container {
     display: flex;
-    gap: 1.5rem;
     overflow-x: auto;
     overflow-y: auto;
     flex: 1;
@@ -2985,6 +3617,8 @@
     display: flex;
     flex-direction: column;
     transition: opacity 0.2s ease, transform 0.2s ease;
+    flex-shrink: 0;
+    box-sizing: border-box;
   }
 
   /* Shot Card (Image placeholder) */
@@ -2993,7 +3627,7 @@
     border-radius: 0;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
     cursor: grab;
-    transition: all 0.2s ease;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
     display: flex;
     flex-direction: column;
     align-items: center;
@@ -3001,6 +3635,17 @@
     border: 1px solid rgba(255, 255, 255, 0.12);
     box-sizing: border-box;
     flex-shrink: 0;
+  }
+
+  /* Prevent child elements from interfering with card drag */
+  .shot-card > * {
+    pointer-events: none;
+  }
+
+  /* Re-enable pointer events for interactive elements */
+  .shot-card .btn-delete,
+  .shot-card .card-title-input {
+    pointer-events: auto;
   }
 
   .shot-card:hover {
@@ -3019,10 +3664,101 @@
   }
 
   .drag-placeholder {
-    background: rgba(128, 128, 128, 0.05);
-    border: 2px dashed rgba(128, 128, 128, 0.3);
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.15);
     border-radius: 4px;
+    transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+    box-sizing: border-box;
+    flex-shrink: 0;
+    animation: placeholder-appear 0.2s ease-out;
+  }
+
+  @keyframes placeholder-appear {
+    from {
+      opacity: 0;
+      transform: scaleY(0.5);
+    }
+    to {
+      opacity: 1;
+      transform: scaleY(1);
+    }
+  }
+
+  /* Blank cell styles */
+  .blank-cell {
+    position: relative;
+    border-radius: 0;
+    border: 1px dashed rgba(255, 255, 255, 0.1);
+    background: rgba(255, 255, 255, 0.02);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    cursor: pointer;
     transition: all 0.2s ease;
+    flex-shrink: 0;
+    box-sizing: border-box;
+  }
+
+  .blank-cell:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .cell-action-btn {
+    width: 48px;
+    height: 48px;
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    opacity: 0;
+  }
+
+  .blank-cell:hover .cell-action-btn {
+    opacity: 1;
+  }
+
+  .cell-action-btn:hover:not(:disabled) {
+    color: rgba(255, 255, 255, 0.9);
+    transform: scale(1.15);
+  }
+
+  .cell-action-btn:disabled {
+    cursor: not-allowed;
+  }
+
+  .blank-cell:hover .cell-action-btn:disabled {
+    opacity: 0.3;
+  }
+
+  .cell-action-btn .material-symbols-outlined {
+    font-size: 28px;
+  }
+
+  /* Card thumbnail */
+  .card-thumbnail {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+    z-index: 0;
+    background: rgba(0, 0, 0, 0.1);
+  }
+
+  .card-title-container {
+    position: relative;
+    z-index: 1;
+    padding: 8px;
+    width: 100%;
   }
 
   .shot-title {
@@ -3124,12 +3860,25 @@
     aspect-ratio: 16 / 9;
   }
 
+  .modal-media-image {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    object-position: center;
+    z-index: 0;
+  }
+
   .sketch-canvas {
+    position: relative;
     width: 100%;
     height: 100%;
     object-fit: contain;
     cursor: crosshair;
     border-radius: 8px;
+    z-index: 1;
   }
 
   .sketch-tools {
@@ -3643,5 +4392,33 @@
       transform: translateY(0);
       opacity: 1;
     }
+  }
+  /* Upload loading state */
+  .upload-loading {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.5);
+    backdrop-filter: blur(4px);
+    z-index: 10;
+  }
+
+  .loading-spinner {
+    width: 50px;
+    height: 50px;
+    border: 4px solid rgba(255, 255, 255, 0.2);
+    border-top: 4px solid white;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+  }
+
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
   }
 </style>

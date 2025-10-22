@@ -5,13 +5,14 @@ import io
 import zipfile
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from google.cloud import datastore, storage
 from PIL import Image, ImageDraw
 import ulid
 import asyncio
+import media_utils
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +92,9 @@ class Card(BaseModel):
     color: str
     prompt: str = ""
     number: Optional[int] = None
+    media_url: Optional[str] = None
+    thumb_url: Optional[str] = None
+    media_type: Optional[str] = None  # "image" or "video"
     createdAt: str
 
 
@@ -99,6 +103,9 @@ class CreateCardRequest(BaseModel):
     title: Optional[str] = None
     color: Optional[str] = None
     prompt: Optional[str] = None
+    media_url: Optional[str] = None
+    thumb_url: Optional[str] = None
+    media_type: Optional[str] = None  # "image" or "video"
 
 
 class UpdateCardRequest(BaseModel):
@@ -106,6 +113,9 @@ class UpdateCardRequest(BaseModel):
     title: Optional[str] = None
     color: Optional[str] = None
     prompt: Optional[str] = None
+    media_url: Optional[str] = None
+    thumb_url: Optional[str] = None
+    media_type: Optional[str] = None  # "image" or "video"
 
 
 @router.post("/api/cards", response_model=Card)
@@ -141,6 +151,11 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
         number = random.randint(1, 99)
         created_at = datetime.now(timezone.utc).isoformat()
 
+        # Get media URLs and type from request
+        media_url = request.media_url
+        thumb_url = request.thumb_url
+        media_type = request.media_type  # "image", "video", or None
+
         # Save to Datastore
         t1 = time.time()
         key = ds_client.key("Card", card_id)
@@ -151,6 +166,9 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
             "color": color,
             "prompt": prompt,
             "number": number,
+            "media_url": media_url,
+            "thumb_url": thumb_url,
+            "media_type": media_type,
             "createdAt": created_at,
         })
         logger.debug(f"Created entity: {time.time() - t1:.3f}s")
@@ -164,14 +182,21 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
             try:
                 bucket = gcs_client.bucket(bucket_name)
                 blob = bucket.blob(f"cards/{card_id}.json")
-                card_json = json.dumps({
+                card_data = {
                     "cardId": card_id,
                     "title": title,
                     "color": color,
                     "prompt": prompt,
                     "number": number,
                     "createdAt": created_at,
-                })
+                }
+                if media_url:
+                    card_data["media_url"] = media_url
+                if thumb_url:
+                    card_data["thumb_url"] = thumb_url
+                if media_type:
+                    card_data["media_type"] = media_type
+                card_json = json.dumps(card_data)
                 blob.upload_from_string(card_json, content_type="application/json")
             except Exception as e:
                 logger.warning(f"Failed to mirror card to GCS: {e}")
@@ -184,6 +209,9 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
             color=color,
             prompt=prompt,
             number=number,
+            media_url=media_url,
+            thumb_url=thumb_url,
+            media_type=media_type,
             createdAt=created_at
         )
 
@@ -235,6 +263,10 @@ async def update_card(card_id: str, request: UpdateCardRequest):
             entity["color"] = request.color
         if request.prompt is not None:
             entity["prompt"] = request.prompt
+        if request.media_url is not None:
+            entity["media_url"] = request.media_url
+        if request.thumb_url is not None:
+            entity["thumb_url"] = request.thumb_url
 
         # Save to Datastore
         ds_client.put(entity)
@@ -244,13 +276,18 @@ async def update_card(card_id: str, request: UpdateCardRequest):
             try:
                 bucket = gcs_client.bucket(bucket_name)
                 blob = bucket.blob(f"cards/{card_id}.json")
-                card_json = json.dumps({
+                card_data = {
                     "cardId": entity.get("cardId"),
                     "title": entity.get("title"),
                     "color": entity.get("color"),
                     "prompt": entity.get("prompt", ""),
                     "createdAt": entity.get("createdAt"),
-                })
+                }
+                if entity.get("media_url"):
+                    card_data["media_url"] = entity.get("media_url")
+                if entity.get("thumb_url"):
+                    card_data["thumb_url"] = entity.get("thumb_url")
+                card_json = json.dumps(card_data)
                 blob.upload_from_string(card_json, content_type="application/json")
             except Exception as e:
                 logger.warning(f"Failed to mirror card to GCS: {e}")
@@ -263,6 +300,8 @@ async def update_card(card_id: str, request: UpdateCardRequest):
             color=entity.get("color"),
             prompt=entity.get("prompt", ""),
             number=entity.get("number"),
+            media_url=entity.get("media_url"),
+            thumb_url=entity.get("thumb_url"),
             createdAt=entity.get("createdAt")
         )
 
@@ -309,6 +348,9 @@ async def fetch_cards(request: FetchCardsRequest):
                     color=entity.get("color", "#CCCCCC"),
                     prompt=entity.get("prompt", ""),
                     number=entity.get("number"),
+                    media_url=entity.get("media_url"),
+                    thumb_url=entity.get("thumb_url"),
+                    media_type=entity.get("media_type"),
                     createdAt=entity.get("createdAt", "")
                 ))
 
@@ -317,6 +359,121 @@ async def fetch_cards(request: FetchCardsRequest):
 
     except Exception as e:
         logger.error(f"Error fetching cards: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/media/upload")
+async def upload_media(file: UploadFile = File(...)):
+    """
+    Upload image or video file and create thumbnail.
+    Stores original and thumbnail in GCS with date-based paths.
+
+    Args:
+        file: Uploaded image or video file
+
+    Returns:
+        dict: Contains media_url, thumb_url, media_type, and file metadata
+    """
+    if gcs_client is None or bucket_name is None:
+        raise HTTPException(status_code=500, detail="GCS client not initialized")
+
+    try:
+        # Validate file type - allow images and videos
+        filename = file.filename or "upload"
+        is_image = media_utils.is_image(filename)
+        is_video = media_utils.is_video(filename)
+
+        if not is_image and not is_video:
+            raise HTTPException(
+                status_code=400,
+                detail="Only image files (PNG, JPEG, WebP, GIF) and video files (MP4, MOV, WebM) are allowed"
+            )
+
+        # Determine media type
+        media_type = "image" if is_image else "video"
+
+        # Read file data
+        file_data = await file.read()
+
+        if not file_data:
+            raise HTTPException(status_code=400, detail="Empty file")
+
+        # Check file size (max 10MB for images, 100MB for videos)
+        max_size = 10 * 1024 * 1024 if is_image else 100 * 1024 * 1024
+        if len(file_data) > max_size:
+            max_mb = 10 if is_image else 100
+            raise HTTPException(status_code=400, detail=f"File size must be less than {max_mb}MB")
+
+        # Get file extension
+        extension = filename.split('.')[-1].lower() if '.' in filename else ('png' if is_image else 'mp4')
+
+        # Generate unique ID
+        file_id = str(ulid.new())
+
+        # Determine content type
+        content_type = media_utils.get_content_type(filename)
+
+        # Upload original media
+        media_path = media_utils.generate_media_path(file_id, extension, is_thumbnail=False)
+        media_url = media_utils.upload_to_gcs(
+            gcs_client,
+            bucket_name,
+            media_path,
+            file_data,
+            content_type
+        )
+
+        # Create and upload thumbnail
+        thumb_url = None
+        if is_image:
+            try:
+                thumb_data = media_utils.create_thumbnail(file_data, max_size=512)
+                thumb_path = media_utils.generate_media_path(file_id, 'png', is_thumbnail=True)
+                thumb_url = media_utils.upload_to_gcs(
+                    gcs_client,
+                    bucket_name,
+                    thumb_path,
+                    thumb_data,
+                    'image/png'
+                )
+                logger.info(f"Created image thumbnail: {thumb_path}")
+            except Exception as e:
+                logger.warning(f"Failed to create image thumbnail: {e}")
+                thumb_url = media_url
+        elif is_video:
+            try:
+                thumb_data = media_utils.create_video_thumbnail(file_data, max_size=512)
+                thumb_path = media_utils.generate_media_path(file_id, 'png', is_thumbnail=True)
+                thumb_url = media_utils.upload_to_gcs(
+                    gcs_client,
+                    bucket_name,
+                    thumb_path,
+                    thumb_data,
+                    'image/png'
+                )
+                logger.info(f"Created video thumbnail: {thumb_path}")
+            except Exception as e:
+                logger.warning(f"Failed to create video thumbnail: {e}")
+                thumb_url = media_url
+
+        logger.info(f"Uploaded {media_type}: {media_path} (size: {len(file_data)} bytes)")
+
+        return {
+            "media_url": media_url,
+            "thumb_url": thumb_url,
+            "media_type": media_type,
+            "file_id": file_id,
+            "filename": filename,
+            "content_type": content_type,
+            "size": len(file_data)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        logger.error(f"Error uploading media: {e}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
