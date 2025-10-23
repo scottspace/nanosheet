@@ -275,9 +275,9 @@
   /* Frozen Row - Shot Headers */
   .frozen-row {
     display: flex;
-    padding-bottom: 2.5rem;
+    padding-bottom: 1rem;
     border-bottom: 2px solid rgba(255, 255, 255, 0.15);
-    margin-bottom: 2.5rem;
+    margin-bottom: 1rem;
     overflow-x: auto;
     overflow-y: visible;
     scrollbar-width: none; /* Firefox */
