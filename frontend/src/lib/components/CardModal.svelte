@@ -27,6 +27,7 @@
     onUpdateUndoStack: (stack: any[]) => void
     onUpdateRedoStack: (stack: any[]) => void
     onUpdateAttachments: (attachments: any[]) => void
+    onShowToast: (message: string) => void
   }
 
   let {
@@ -49,7 +50,8 @@
     onSave,
     onUpdateUndoStack,
     onUpdateRedoStack,
-    onUpdateAttachments
+    onUpdateAttachments,
+    onShowToast
   }: Props = $props()
 
   // Local state
@@ -473,6 +475,7 @@
           setCard(sheet, cardId, updatedCard)
         }
         console.log('[saveModal] Card updated successfully')
+        onShowToast('Backend temporarily disconnected.')
       } else {
         console.error('[saveModal] Failed to update card:', response.statusText)
       }

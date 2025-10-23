@@ -678,7 +678,8 @@
   projectName="nanosheet"
   {levels}
   breadcrumbs={[]}
-  onLevelClick={(index) => console.log('Level clicked:', levels[index].name)}
+  onLevelClick={(index) => showToast(`${levels[index].name} feature not yet implemented`)}
+  onShowToast={showToast}
 >
   {#if state.loading}
     <div class="loading">Loading sheet...</div>
@@ -730,6 +731,7 @@
 <CardModal
   show={state.showModal}
   cardId={state.modalCardId}
+  mediaId={null}
   title={state.modalTitle}
   color={state.modalColor}
   prompt={state.modalPrompt}
@@ -737,15 +739,17 @@
   mediaType={state.modalMediaType}
   thumbUrl={state.modalThumbUrl}
   attachments={state.attachments}
-  canvasRef={state.canvasRef}
-  isDrawing={state.isDrawing}
-  currentColor={state.currentColor}
-  drawingStrokes={state.drawingStrokes}
+  sheet={state.sheet}
+  apiUrl={state.apiUrl}
+  userId={state.userId}
+  cardsMetadata={state.cardsMetadata}
+  undoStack={state.undoStack}
   onClose={() => { state.showModal = false }}
-  onTitleChange={(value) => { state.modalTitle = value }}
-  onColorChange={(value) => { state.modalColor = value }}
-  onPromptChange={(value) => { state.modalPrompt = value }}
-  onSave={() => cardOps?.handleSaveCard()}
+  onSave={(updates) => {}}
+  onUpdateUndoStack={(stack) => { state.undoStack = stack }}
+  onUpdateRedoStack={(stack) => { state.redoStack = stack }}
+  onUpdateAttachments={(att) => { state.attachments = att }}
+  onShowToast={showToast}
 />
 
 <ToastNotification

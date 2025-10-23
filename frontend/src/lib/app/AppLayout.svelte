@@ -50,6 +50,8 @@
     onToggleStickyTopRow: () => void
     /** Callback: Toggle ellipsis menu */
     onToggleEllipsisMenu: (id: string) => void
+    /** Callback: Show toast notification */
+    onShowToast: (message: string) => void
 
     // LevelsBar props
     /** Project name */
@@ -87,6 +89,7 @@
     onToggleSound,
     onToggleStickyTopRow,
     onToggleEllipsisMenu,
+    onShowToast,
     // LevelsBar
     projectName,
     levels,
@@ -117,6 +120,7 @@
     {onToggleSound}
     {onToggleStickyTopRow}
     {onToggleEllipsisMenu}
+    {onShowToast}
   />
 
   <!-- Breadcrumb Navigation (optional) -->

@@ -50,6 +50,8 @@
     onToggleStickyTopRow: () => void
     /** Callback: Toggle ellipsis menu */
     onToggleEllipsisMenu: (id: string) => void
+    /** Callback: Show toast notification */
+    onShowToast: (message: string) => void
   }
 
   let {
@@ -67,7 +69,8 @@
     onSelectThumbnailSize,
     onToggleSound,
     onToggleStickyTopRow,
-    onToggleEllipsisMenu
+    onToggleEllipsisMenu,
+    onShowToast
   }: Props = $props()
 </script>
 
@@ -140,7 +143,7 @@
       {/if}
     </div>
 
-    <button class="btn-toolbar">Archive</button>
+    <button class="btn-toolbar" onclick={() => onShowToast('Archive feature not yet implemented')}>Archive</button>
 
     <button class="icon-btn" title={isSoundMuted ? "Unmute" : "Mute"} onclick={onToggleSound}>
       {#if isSoundMuted}
