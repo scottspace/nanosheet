@@ -16,6 +16,11 @@
     getAllCardIds
   } from '../lib/ySheet'
   import VideoMedia from '../lib/VideoMedia.svelte'
+  import ToastNotification from '../lib/components/ToastNotification.svelte'
+  import ConfirmDialog from '../lib/components/ConfirmDialog.svelte'
+  import CardModal from '../lib/components/CardModal.svelte'
+  import SheetGrid from '../lib/components/SheetGrid.svelte'
+  import type { Card } from '../lib/sheet/types'
 
   // Environment detection - will be set in onMount
   let WS_URL = $state('')
@@ -2558,570 +2563,87 @@
   {#if loading}
     <div class="loading">Loading shots...</div>
   {:else}
-    <div class="sheet-view" onclick={closeColumnMenu}>
-      <!-- Frozen header row with shot titles -->
-      {#if stickyTopRow}
-      <div
-        bind:this={frozenRowRef}
-        class="frozen-row"
-        style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px"
-        onscroll={syncColumnsScroll}
-      >
-        {#each displayCols as colId, colIndex (colId)}
-          <div class="column-wrapper" animate:flip={{ duration: 300 }}>
-            <!-- Column drop indicator -->
-            {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
-              <div
-                class="column-drop-indicator"
-                style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"
-                ondragover={(e) => { e.preventDefault(); handleColumnDragOver(e, colId); }}
-                ondrop={(e) => { console.log('[frozen drop indicator before ondrop]'); handleColumnDrop(e, colId); }}
-              ></div>
-            {/if}
-            <div
-              class="shot-column {draggedColumn === colId ? 'column-dragging' : ''}"
-              style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px"
-              ondragover={(e) => handleColumnDragOver(e, colId)}
-              ondrop={(e) => handleColumnDrop(e, colId)}
-            >
-            <!-- Title and icons on same line -->
-            <div class="shot-header-title">
-              <input
-                type="text"
-                class="shot-title-input"
-                value={colId.startsWith('phantom-') ? '' : (shotTitles.get(colId) || `Shot ${colId.replace('c-', '').replace('media', '1').replace('alt', '2').replace('notes', '3')}`)}
-                placeholder={colId.startsWith('phantom-') ? 'New column' : 'Shot title'}
-                onchange={(e) => handleShotTitleChange(colId, e.currentTarget.value)}
-                disabled={colId.startsWith('phantom-')}
-              />
-              {#if !colId.startsWith('phantom-')}
-              <div class="shot-header-menu">
-                <button class="icon-btn-header menu-btn" title="Column options" onclick={(e) => toggleColumnMenu(colId, e)}>
-                  <span class="material-symbols-outlined">more_vert</span>
-                </button>
-
-                {#if openColumnMenu === colId}
-                  <div class="column-dropdown-menu" onclick={(e) => e.stopPropagation()}>
-                    <button class="menu-item" onclick={() => { duplicateColumn(colId); closeColumnMenu(); }}>
-                      <span class="material-symbols-outlined">content_copy</span>
-                      <span>Duplicate</span>
-                    </button>
-                    <button class="menu-item" onclick={closeColumnMenu}>
-                      <span class="material-symbols-outlined">comment</span>
-                      <span>Comment</span>
-                    </button>
-                    <button class="menu-item" onclick={() => { handleColumnDownload(colId); closeColumnMenu(); }}>
-                      <span class="material-symbols-outlined">file_download</span>
-                      <span>Download</span>
-                    </button>
-                    <button class="menu-item delete-item" onclick={() => { deleteColumn(colId); closeColumnMenu(); }}>
-                      <span class="material-symbols-outlined">delete</span>
-                      <span>Delete</span>
-                    </button>
-                  </div>
-                {/if}
-              </div>
-              {/if}
-            </div>
-
-            <!-- First card (frozen) -->
-            {#if timeline.length > 0}
-              {@const firstTimeId = timeline[0]}
-              {@const key = cellKey(firstTimeId, colId)}
-              {@const cell = cellsMap.get(key)}
-              {@const cardId = cell?.cardId}
-              {@const card = cardId ? cardsMetadata.get(cardId) : null}
-
-              {#if card}
-                <div
-                  class="shot-card column-drag-handle"
-                  style="background-color: {card.thumb_url ? 'rgba(0, 0, 0, 0.3)' : card.color}; width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
-                  draggable="true"
-                  ondragstart={(e) => handleColumnDragStart(e, colId)}
-                  ondragover={(e) => handleColumnDragOver(e, colId)}
-                  ondrop={(e) => handleColumnDrop(e, colId)}
-                  ondragend={resetColumnDrag}
-                  ondblclick={() => handleCardDoubleClick(cardId)}
-                >
-                  {#if card.isLoading}
-                    <!-- Loading spinner -->
-                    <div class="upload-loading">
-                      <div class="loading-spinner"></div>
-                    </div>
-                  {:else if card.media_type === 'video' && card.media_url && card.thumb_url}
-                    <div ondragstart={(e) => e.preventDefault()}>
-                      <VideoMedia src={card.media_url} thumbnail={card.thumb_url} />
-                    </div>
-                  {:else if card.thumb_url}
-                    <img
-                      src={card.thumb_url}
-                      alt={card.title}
-                      class="card-thumbnail"
-                      loading="lazy"
-                      decoding="async"
-                      ondragstart={(e) => e.preventDefault()}
-                    />
-                  {/if}
-                  {#if !card.thumb_url && !card.media_url && !card.isLoading}
-                  <div class="card-title-container">
-                    <input
-                      type="text"
-                      class="shot-title-input card-title-input"
-                      value={card.number ? `${card.title} ${card.number}` : card.title}
-                      oninput={(e) => handleCardTitleInput(cardId, e.currentTarget.value)}
-                      onchange={(e) => handleCardTitleChange(cardId, e.currentTarget.value)}
-                      onclick={(e) => e.stopPropagation()}
-                    />
-                  </div>
-                  {/if}
-                  <button
-                    class="btn-delete"
-                    onclick={(e) => {
-                      e.stopPropagation()
-                      handleDeleteCard(firstRowId, colId)
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              {/if}
-            {/if}
-          </div>
-
-            <!-- Column drop indicator after -->
-            {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
-              <div
-                class="column-drop-indicator"
-                style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"
-                ondragover={(e) => { e.preventDefault(); handleColumnDragOver(e, colId); }}
-                ondrop={(e) => { console.log('[drop indicator after ondrop]'); handleColumnDrop(e, colId); }}
-              ></div>
-            {/if}
-          </div>
-        {/each}
-      </div>
-      {/if}
-
-      <!-- Scrollable columns area -->
-      <div
-        bind:this={columnsContainerRef}
-        class="columns-container"
-        style="gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.05}px"
-        onscroll={syncColumnsScroll}
-      >
-        {#each displayCols as colId, colIndex (colId)}
-          <div class="column-wrapper" animate:flip={{ duration: 300 }}>
-            <!-- Column drop indicator before -->
-            {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && columnDragPreview.insertBefore}
-              <div
-                class="column-drop-indicator"
-                style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"
-                ondragover={(e) => { e.preventDefault(); handleColumnDragOver(e, colId); }}
-                ondrop={(e) => { console.log('[drop indicator ondrop]'); handleColumnDrop(e, colId); }}
-              ></div>
-            {/if}
-
-            <div
-              class="column {draggedColumn === colId ? 'column-dragging' : ''}"
-              style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; gap: {THUMBNAIL_SIZES[selectedThumbnailSize].width * 0.035}px"
-              ondragover={(e) => {
-                console.log('[column ondragover] colId:', colId, 'isColumnDragging:', isColumnDragging);
-                handleColumnDragOver(e, colId);
-              }}
-              ondrop={(e) => {
-                console.log('[column ondrop] colId:', colId, 'isColumnDragging:', isColumnDragging);
-                handleColumnDrop(e, colId);
-              }}
-            >
-            <!-- Get all cards in this lane (skip first time if sticky) -->
-            {#each (stickyTopRow ? displayRows.slice(1) : displayRows) as rowId (rowId)}
-              {@const key = cellKey(rowId, colId)}
-              {@const cell = cellsMap.get(key)}
-              {@const cardId = cell?.cardId}
-              {@const card = cardId ? cardsMetadata.get(cardId) : null}
-              {@const isFirstRow = rowId === rows[0]}
-
-              <!-- Show shot header if this is first row and sticky is disabled -->
-              {#if !stickyTopRow && isFirstRow && !colId.startsWith('phantom-')}
-                <div class="shot-header-title">
-                  <input
-                    type="text"
-                    class="shot-title-input"
-                    value={shotTitles.get(colId) || `Shot ${colId.replace('c-', '').replace('media', '1').replace('alt', '2').replace('notes', '3')}`}
-                    placeholder="Shot title"
-                    onchange={(e) => handleShotTitleChange(colId, e.currentTarget.value)}
-                  />
-                  <div class="shot-header-menu">
-                    <button class="icon-btn-header menu-btn" title="Column options" onclick={(e) => toggleColumnMenu(colId, e)}>
-                      <span class="material-symbols-outlined">more_vert</span>
-                    </button>
-
-                    {#if openColumnMenu === colId}
-                      <div class="column-dropdown-menu" onclick={(e) => e.stopPropagation()}>
-                        <button class="menu-item" onclick={() => { duplicateColumn(colId); closeColumnMenu(); }}>
-                          <span class="material-symbols-outlined">content_copy</span>
-                          <span>Duplicate</span>
-                        </button>
-                        <button class="menu-item" onclick={closeColumnMenu}>
-                          <span class="material-symbols-outlined">comment</span>
-                          <span>Comment</span>
-                        </button>
-                        <button class="menu-item" onclick={() => { handleColumnDownload(colId); closeColumnMenu(); }}>
-                          <span class="material-symbols-outlined">file_download</span>
-                          <span>Download</span>
-                        </button>
-                        <button class="menu-item delete-item" onclick={() => { deleteColumn(colId); closeColumnMenu(); }}>
-                          <span class="material-symbols-outlined">delete</span>
-                          <span>Delete</span>
-                        </button>
-                      </div>
-                    {/if}
-                  </div>
-                </div>
-              {/if}
-
-              <!-- Show placeholder before card if drag preview indicates it -->
-              {#if dragPreview && dragPreview.targetLane === colId && dragPreview.targetTime === rowId && dragPreview.insertBefore}
-                <div
-                  class="drag-placeholder"
-                  style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
-                  ondrop={(e) => {
-                    if (isColumnDragging) return;
-                    handleDrop(e, rowId, colId);
-                  }}
-                  ondragover={(e) => e.preventDefault()}
-                ></div>
-              {/if}
-
-              {#if card}
-                <div
-                  class="shot-card {isDragging && draggedCard?.cardId === cardId ? 'dragging' : ''} {!stickyTopRow && isFirstRow ? 'column-drag-handle' : ''}"
-                  style="background-color: {card.thumb_url ? 'rgba(0, 0, 0, 0.3)' : card.color}; width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
-                  draggable="true"
-                  ondragstart={(e) => !stickyTopRow && isFirstRow ? handleColumnDragStart(e, colId) : handleDragStart(e, rowId, colId, cardId)}
-                  ondragover={(e) => {
-                    console.log('[card ondragover] rowId:', rowId, 'colId:', colId, 'isColumnDragging:', isColumnDragging);
-                    // If dragging a column, prevent default but let it bubble to column container
-                    if (isColumnDragging) {
-                      e.preventDefault();
-                      console.log('[card ondragover] Returning early for column drag');
-                      return;
-                    }
-                    (!stickyTopRow && isFirstRow ? handleColumnDragOver(e, colId) : handleDragOver(e, rowId, colId, e.currentTarget));
-                  }}
-                  ondrop={(e) => {
-                    console.log('[card ondrop] rowId:', rowId, 'colId:', colId, 'isColumnDragging:', isColumnDragging);
-                    // If dragging a column, let it bubble to column container; otherwise handle card drop
-                    if (isColumnDragging) {
-                      console.log('[card ondrop] Returning early for column drag');
-                      return;
-                    }
-                    (!stickyTopRow && isFirstRow ? handleColumnDrop(e, colId) : handleDrop(e, rowId, colId));
-                  }}
-                  ondragend={(e) => !stickyTopRow && isFirstRow ? resetColumnDrag() : handleDragEnd(e)}
-                  ondblclick={() => handleCardDoubleClick(cardId)}
-                >
-                  {#if card.isLoading}
-                    <!-- Loading spinner -->
-                    <div class="upload-loading">
-                      <div class="loading-spinner"></div>
-                    </div>
-                  {:else if card.media_type === 'video' && card.media_url && card.thumb_url}
-                    <div ondragstart={(e) => e.preventDefault()}>
-                      <VideoMedia src={card.media_url} thumbnail={card.thumb_url} />
-                    </div>
-                  {:else if card.thumb_url}
-                    <img
-                      src={card.thumb_url}
-                      alt={card.title}
-                      class="card-thumbnail"
-                      loading="lazy"
-                      decoding="async"
-                      ondragstart={(e) => e.preventDefault()}
-                    />
-                  {/if}
-                  {#if !card.thumb_url && !card.media_url && !card.isLoading}
-                  <div class="card-title-container">
-                    <input
-                      type="text"
-                      class="shot-title-input card-title-input"
-                      value={card.number ? `${card.title} ${card.number}` : card.title}
-                      oninput={(e) => handleCardTitleInput(cardId, e.currentTarget.value)}
-                      onchange={(e) => handleCardTitleChange(cardId, e.currentTarget.value)}
-                      onclick={(e) => e.stopPropagation()}
-                    />
-                  </div>
-                  {/if}
-                  <button
-                    class="btn-delete"
-                    onclick={(e) => {
-                      e.stopPropagation()
-                      handleDeleteCard(rowId, colId)
-                    }}
-                  >
-                    ×
-                  </button>
-                </div>
-              {:else}
-                <!-- Blank cell with upload/generate icons on hover -->
-
-                <div
-                  class="blank-cell"
-                  style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
-                  ondragover={(e) => {
-                    // If dragging a column, prevent default but let it bubble
-                    if (isColumnDragging) {
-                      e.preventDefault();
-                      return;
-                    }
-                    handleDragOver(e, rowId, colId, e.currentTarget);
-                  }}
-                  ondrop={(e) => {
-                    // If dragging a column, let it bubble to column container
-                    if (isColumnDragging) return;
-                    handleDrop(e, rowId, colId);
-                  }}
-                >
-                  <input
-                    type="file"
-                    id="upload-{rowId}-{colId}"
-                    accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,video/mp4,video/quicktime,video/webm"
-                    style="display: none"
-                    onchange={(e) => handleFileUpload(e, rowId, colId)}
-                  />
-                  <button
-                    class="cell-action-btn upload-btn"
-                    title="Upload media"
-                    onclick={() => document.getElementById(`upload-${rowId}-${colId}`)?.click()}
-                  >
-                    <span class="material-symbols-outlined">upload</span>
-                  </button>
-                  <button
-                    class="cell-action-btn generate-btn"
-                    title="Generate (coming soon)"
-                    disabled
-                  >
-                    <span class="material-symbols-outlined">add</span>
-                  </button>
-                </div>
-              {/if}
-
-              <!-- Show placeholder after card if drag preview indicates it -->
-              {#if dragPreview && dragPreview.targetLane === colId && dragPreview.targetTime === rowId && !dragPreview.insertBefore}
-                <div
-                  class="drag-placeholder"
-                  style="width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px; height: {THUMBNAIL_SIZES[selectedThumbnailSize].height}px"
-                  ondrop={(e) => {
-                    if (isColumnDragging) return;
-                    handleDrop(e, rowId, colId);
-                  }}
-                  ondragover={(e) => e.preventDefault()}
-                ></div>
-              {/if}
-            {/each}
-          </div>
-
-            <!-- Column drop indicator after -->
-            {#if columnDragPreview && columnDragPreview.targetColIndex === colIndex && !columnDragPreview.insertBefore}
-              <div
-                class="column-drop-indicator"
-                style="min-width: {THUMBNAIL_SIZES[selectedThumbnailSize].width}px;"
-                ondragover={(e) => { e.preventDefault(); handleColumnDragOver(e, colId); }}
-                ondrop={(e) => { console.log('[scrollable drop indicator after ondrop]'); handleColumnDrop(e, colId); }}
-              ></div>
-            {/if}
-          </div>
-        {/each}
-      </div>
+    <div onclick={closeColumnMenu}>
+      <SheetGrid
+        {displayCols}
+        {displayRows}
+        {rows}
+        stickyTopRow={stickyTopRow}
+        {cellsMap}
+        {cardsMetadata}
+        thumbnailSize={THUMBNAIL_SIZES[selectedThumbnailSize]}
+        {shotTitles}
+        {draggedColumn}
+        {isColumnDragging}
+        {columnDragPreview}
+        {isDragging}
+        {draggedCard}
+        {dragPreview}
+        {openColumnMenu}
+        {timeline}
+        bind:frozenRowRef
+        bind:columnsContainerRef
+        onSyncColumnsScroll={syncColumnsScroll}
+        onColumnDragStart={handleColumnDragStart}
+        onColumnDragOver={handleColumnDragOver}
+        onColumnDrop={handleColumnDrop}
+        onResetColumnDrag={resetColumnDrag}
+        onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+        onDragEnd={handleDragEnd}
+        onCardDoubleClick={handleCardDoubleClick}
+        onDeleteCard={handleDeleteCard}
+        onCardTitleInput={handleCardTitleInput}
+        onCardTitleChange={handleCardTitleChange}
+        onFileUpload={handleFileUpload}
+        onShotTitleChange={handleShotTitleChange}
+        onToggleColumnMenu={toggleColumnMenu}
+        onCloseColumnMenu={closeColumnMenu}
+        onDuplicateColumn={duplicateColumn}
+        onDeleteColumn={deleteColumn}
+        onColumnDownload={handleColumnDownload}
+      />
     </div>
   {/if}
 
-  <!-- Modal Overlay (inside content area) -->
-  {#if showModal}
-    <div class="modal-overlay" onclick={closeModal}>
-      <div class="modal-content-large" onclick={(e) => e.stopPropagation()}>
-        <!-- Left side: Large card preview with canvas -->
-        <div class="modal-left">
-          <!-- Editable title above card -->
-          <input
-            type="text"
-            class="modal-card-title"
-            value={modalTitle}
-            oninput={(e) => handleModalTitleInput(e.currentTarget.value)}
-            placeholder="Shot title..."
-          />
-
-          <div class="modal-card-preview" style="background-color: {modalColor}">
-            {#if modalMediaType === 'video' && modalMediaUrl && modalThumbUrl}
-              <VideoMedia src={modalMediaUrl} thumbnail={modalThumbUrl} />
-            {:else if modalMediaUrl}
-              <img
-                src={modalMediaUrl}
-                alt={modalTitle}
-                class="modal-media-image"
-                loading="eager"
-              />
-            {/if}
-            <canvas
-              bind:this={canvasRef}
-              class="sketch-canvas"
-              width="800"
-              height="450"
-              onmousedown={startDrawing}
-              onmousemove={draw}
-              onmouseup={stopDrawing}
-              onmouseleave={stopDrawing}
-            ></canvas>
-          </div>
-
-          <!-- Sketch tools -->
-          <div class="sketch-tools">
-            <span class="tool-label">Draw:</span>
-            <button
-              class="color-circle"
-              class:active={currentColor === 'white'}
-              style="background: white;"
-              title="White"
-              onclick={() => setDrawColor('white')}
-            ></button>
-            <button
-              class="color-circle"
-              class:active={currentColor === 'black'}
-              style="background: black;"
-              title="Black"
-              onclick={() => setDrawColor('black')}
-            ></button>
-
-            <div class="tool-divider"></div>
-
-            <button class="tool-btn" title="Undo stroke" onclick={undoStroke}>
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                <path d="M8 4L4 8L8 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M4 8H14C15.1046 8 16 8.89543 16 10V12C16 13.1046 15.1046 14 14 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </button>
-            <button class="tool-btn" title="Redo stroke" onclick={redoStroke}>
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                <path d="M12 4L16 8L12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                <path d="M16 8H6C4.89543 8 4 8.89543 4 10V12C4 13.1046 4.89543 14 6 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-              </svg>
-            </button>
-
-            <div class="tool-divider"></div>
-
-            <button class="tool-btn" title="Clear all" onclick={clearCanvas}>
-              <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-                <path d="M4 6H16M8 6V4C8 3.44772 8.44772 3 9 3H11C11.5523 3 12 3.44772 12 4V6M6 6V16C6 16.5523 6.44772 17 7 17H13C13.5523 17 14 16.5523 14 16V6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
-              </svg>
-            </button>
-          </div>
-        </div>
-
-        <!-- Right side: Edit controls -->
-        <div class="modal-right">
-          <div class="modal-header">
-            <button class="modal-close-btn" onclick={closeModal}>×</button>
-          </div>
-
-          <div class="modal-fields">
-            <div class="modal-field">
-              <label class="modal-label">Color</label>
-              <div class="color-input-group">
-                <input
-                  type="color"
-                  class="modal-color-picker"
-                  bind:value={modalColor}
-                />
-                <input
-                  type="text"
-                  class="modal-input modal-color-text"
-                  bind:value={modalColor}
-                  placeholder="#CCCCCC"
-                  pattern="^#[0-9A-Fa-f]{6}$"
-                />
-              </div>
-            </div>
-
-            <div class="modal-field">
-              <div class="prompt-header">
-                <label class="modal-label">Prompt</label>
-                <button class="format-json-btn" title="Format as JSON" onclick={formatPromptAsJSON}>
-                  <span class="material-symbols-outlined">data_object</span>
-                </button>
-              </div>
-              <textarea
-                bind:this={promptTextRef}
-                class="modal-textarea"
-                value={modalPrompt}
-                placeholder="Add a rowing oar"
-                rows="8"
-              ></textarea>
-            </div>
-
-            <div class="modal-field">
-              <label class="modal-label">Attachments</label>
-              <div class="attachments-gallery">
-                <!-- Upload button -->
-                <label class="attachment-upload-btn" title="Upload image or video">
-                  <span class="material-symbols-outlined">add_photo_alternate</span>
-                  <input type="file" accept="image/*,video/mp4,video/quicktime,video/webm" style="display: none;" onchange={handleAttachmentUpload} />
-                </label>
-
-                <!-- Attachment thumbnails -->
-                {#each attachments as attachment}
-                  <div class="attachment-thumbnail">
-                    <img src={attachment.thumbnailUrl} alt={attachment.name} />
-                    <button
-                      class="attachment-delete-btn"
-                      title="Delete attachment"
-                      onclick={() => deleteAttachment(attachment.id)}
-                    >
-                      ×
-                    </button>
-                  </div>
-                {/each}
-              </div>
-            </div>
-          </div>
-
-          <div class="modal-actions">
-            <button class="modal-btn modal-btn-cancel" onclick={closeModal}>
-              Cancel
-            </button>
-            <button class="modal-btn modal-btn-save" onclick={saveModal}>
-              Save
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  {/if}
+  <!-- Card Modal -->
+  <CardModal
+    bind:show={showModal}
+    bind:cardId={modalCardId}
+    bind:mediaId={modalMediaId}
+    bind:title={modalTitle}
+    bind:color={modalColor}
+    bind:prompt={modalPrompt}
+    bind:mediaUrl={modalMediaUrl}
+    bind:mediaType={modalMediaType}
+    bind:thumbUrl={modalThumbUrl}
+    bind:attachments={attachments}
+    {sheet}
+    apiUrl={API_URL}
+    userId={USER_ID}
+    {cardsMetadata}
+    bind:undoStack
+    onClose={closeModal}
+    onSave={saveModal}
+    onUpdateUndoStack={(stack) => { undoStack = stack }}
+    onUpdateRedoStack={(stack) => { redoStack = stack }}
+    onUpdateAttachments={(atts) => { attachments = atts }}
+  />
 
   <!-- Confirmation Dialog -->
-  {#if showConfirmDialog}
-    <div class="confirm-overlay" onclick={handleCancelConfirm}>
-      <div class="confirm-dialog" onclick={(e) => e.stopPropagation()}>
-        <div class="confirm-message">{confirmMessage}</div>
-        <div class="confirm-buttons">
-          <button class="confirm-btn confirm-btn-cancel" onclick={handleCancelConfirm}>
-            Cancel
-          </button>
-          <button class="confirm-btn confirm-btn-delete" onclick={handleConfirm}>
-            Delete
-          </button>
-        </div>
-      </div>
-    </div>
-  {/if}
+  <ConfirmDialog
+    show={showConfirmDialog}
+    message={confirmMessage}
+    onConfirm={handleConfirm}
+    onCancel={handleCancelConfirm}
+  />
 
   <!-- Toast Notification -->
-  {#if showToast}
-    <div class="toast-overlay">
-      <div class="toast">
-        {toastMessage}
-      </div>
-    </div>
-  {/if}
+  <ToastNotification
+    show={showToast}
+    message={toastMessage}
+  />
 
     </main>
   </div>
@@ -3979,64 +3501,7 @@
     letter-spacing: -0.01em;
   }
 
-  /* Modal Styles */
-  .modal-overlay {
-    position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(0, 0, 0, 0.92);
-    backdrop-filter: blur(4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 10000;
-    animation: fadeIn 0.2s ease;
-    padding: 2rem;
-  }
 
-  @keyframes fadeIn {
-    from {
-      opacity: 0;
-    }
-    to {
-      opacity: 1;
-    }
-  }
-
-  .modal-content-large {
-    display: flex;
-    gap: 1.5rem;
-    background: #000;
-    border: 1px solid rgba(255, 255, 255, 0.2);
-    border-radius: 12px;
-    max-width: 1400px;
-    max-height: 90vh;
-    width: 100%;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.8);
-    animation: slideUp 0.2s ease;
-    overflow: hidden;
-  }
-
-  @keyframes slideUp {
-    from {
-      transform: translateY(20px);
-      opacity: 0;
-    }
-    to {
-      transform: translateY(0);
-      opacity: 1;
-    }
-  }
-
-  .modal-left {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    padding: 1.5rem;
-    min-width: 0;
-  }
 
   .modal-card-title {
     background: transparent;
