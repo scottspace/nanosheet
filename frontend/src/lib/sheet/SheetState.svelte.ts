@@ -109,31 +109,35 @@ export class SheetState {
   // ============================================================================
   // DRAG STATE (CARDS)
   // ============================================================================
+  // NOTE: These are NOT $state() because they're mutated hundreds of times
+  // per second during drag operations. Using $state() causes massive performance
+  // overhead. The UI still updates because components re-render on dragover events.
 
   /** Currently dragged card */
-  draggedCard = $state<DraggedCard | null>(null)
+  draggedCard: DraggedCard | null = null
 
   /** Drag preview (where card will drop) */
-  dragPreview = $state<DragPreview | null>(null)
+  dragPreview: DragPreview | null = null
 
   /** Is dragging active */
-  isDragging = $state(false)
+  isDragging: boolean = false
 
   /** Mouse position during drag */
-  dragMousePos = $state({ x: 0, y: 0 })
+  dragMousePos: { x: number; y: number } = { x: 0, y: 0 }
 
   // ============================================================================
   // DRAG STATE (COLUMNS)
   // ============================================================================
+  // NOTE: Same as card drag - non-reactive for performance
 
   /** Currently dragged column */
-  draggedColumn = $state<string | null>(null)
+  draggedColumn: string | null = null
 
   /** Column drag preview */
-  columnDragPreview = $state<ColumnDragPreview | null>(null)
+  columnDragPreview: ColumnDragPreview | null = null
 
   /** Is column dragging active */
-  isColumnDragging = $state(false)
+  isColumnDragging: boolean = false
 
   // ============================================================================
   // MENU STATE
@@ -228,6 +232,16 @@ export class SheetState {
   confirmCallback: (() => void) | null = null
 
   // ============================================================================
+  // CARD CONTEXT MENU STATE
+  // ============================================================================
+
+  /** Open card context menu (cardId or null) */
+  openCardMenu = $state<string | null>(null)
+
+  /** Card menu position */
+  cardMenuPosition = $state<{ x: number; y: number }>({ x: 0, y: 0 })
+
+  // ============================================================================
   // TOAST NOTIFICATION STATE
   // ============================================================================
 
@@ -236,6 +250,15 @@ export class SheetState {
 
   /** Toast message */
   toastMessage = $state('')
+
+  /** Toast progress (0-100) */
+  toastProgress = $state<number | undefined>(undefined)
+
+  /** Toast current item number */
+  toastCurrent = $state<number | undefined>(undefined)
+
+  /** Toast total items */
+  toastTotal = $state<number | undefined>(undefined)
 
   /** Toast timeout ID */
   toastTimeout: number | null = null

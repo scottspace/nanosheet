@@ -30,10 +30,14 @@
     stickyTopRow: boolean
     /** Open ellipsis menu ID */
     openEllipsisMenu: string | null
+    /** Current orientation */
+    orientation: 'vertical' | 'horizontal'
     /** Callback: Undo action */
     onUndo: () => void
     /** Callback: Redo action */
     onRedo: () => void
+    /** Callback: Set orientation */
+    onSetOrientation: (orientation: 'vertical' | 'horizontal') => void
     /** Callback: Regenerate sheet (dev) */
     onRegenerate: () => void
     /** Callback: Toggle thumbnail menu */
@@ -54,8 +58,10 @@
     isSoundMuted,
     stickyTopRow,
     openEllipsisMenu,
+    orientation,
     onUndo,
     onRedo,
+    onSetOrientation,
     onRegenerate,
     onToggleThumbnailMenu,
     onSelectThumbnailSize,
@@ -68,9 +74,9 @@
 <div class="toolbar">
   <div class="toolbar-left">
     <span class="app-title">Storyboard</span>
+  </div>
 
-    <div class="toolbar-divider"></div>
-
+  <div class="toolbar-right">
     <button class="icon-btn" title="Undo" onclick={onUndo}>
       <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
         <path d="M8 4L4 8L8 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
@@ -83,10 +89,33 @@
         <path d="M16 8H6C4.89543 8 4 8.89543 4 10V12C4 13.1046 4.89543 14 6 14H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>
     </button>
-  </div>
 
-  <div class="toolbar-right">
-    <button class="btn-toolbar">Archive</button>
+    <div class="toolbar-divider"></div>
+
+    <button
+      class="icon-btn"
+      class:active={orientation === 'vertical'}
+      title="Vertical orientation"
+      onclick={() => onSetOrientation('vertical')}
+    >
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <rect x="3" y="4" width="14" height="12" stroke="currentColor" stroke-width="1.5" rx="1"/>
+        <line x1="10" y1="4" x2="10" y2="16" stroke="currentColor" stroke-width="1.5"/>
+      </svg>
+    </button>
+    <button
+      class="icon-btn"
+      class:active={orientation === 'horizontal'}
+      title="Horizontal orientation"
+      onclick={() => onSetOrientation('horizontal')}
+    >
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <rect x="4" y="3" width="12" height="14" stroke="currentColor" stroke-width="1.5" rx="1"/>
+        <line x1="4" y1="10" x2="16" y2="10" stroke="currentColor" stroke-width="1.5"/>
+      </svg>
+    </button>
+
+    <div class="toolbar-divider"></div>
 
     <div class="thumbnail-dropdown">
       <button class="btn-size-display" onclick={(e) => { e.stopPropagation(); onToggleThumbnailMenu(); }}>
@@ -110,6 +139,8 @@
         </div>
       {/if}
     </div>
+
+    <button class="btn-toolbar">Archive</button>
 
     <button class="icon-btn" title={isSoundMuted ? "Unmute" : "Mute"} onclick={onToggleSound}>
       {#if isSoundMuted}
@@ -219,6 +250,11 @@
   .icon-btn:hover {
     background: rgba(255, 255, 255, 0.08);
     color: rgba(255, 255, 255, 0.9);
+  }
+
+  .icon-btn.active {
+    background: rgba(255, 255, 255, 0.12);
+    color: rgba(255, 255, 255, 1);
   }
 
   .btn-toolbar {

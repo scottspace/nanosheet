@@ -5,7 +5,7 @@ import io
 import zipfile
 from datetime import datetime, timezone
 from typing import List, Optional
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from google.cloud import datastore, storage
@@ -256,20 +256,47 @@ async def update_card(card_id: str, request: UpdateCardRequest):
         if not entity:
             raise HTTPException(status_code=404, detail=f"Card {card_id} not found")
 
-        # Update fields if provided
+        # Get sheet_id for Yjs broadcast
+        sheet_id = entity.get("sheetId")
+
+        # Track which fields are being updated for Yjs broadcast
+        updates = {}
+
+        # Update fields if provided (including explicit None to clear fields)
         if request.title is not None:
             entity["title"] = request.title
+            updates["title"] = request.title
         if request.color is not None:
             entity["color"] = request.color
+            updates["color"] = request.color
         if request.prompt is not None:
             entity["prompt"] = request.prompt
-        if request.media_url is not None:
+            updates["prompt"] = request.prompt
+
+        # Handle media fields - these can be explicitly set to None to clear
+        if "media_url" in request.model_dump(exclude_unset=True):
             entity["media_url"] = request.media_url
-        if request.thumb_url is not None:
+            updates["media_url"] = request.media_url
+        if "thumb_url" in request.model_dump(exclude_unset=True):
             entity["thumb_url"] = request.thumb_url
+            updates["thumb_url"] = request.thumb_url
+        if "media_type" in request.model_dump(exclude_unset=True):
+            entity["media_type"] = request.media_type
+            updates["media_type"] = request.media_type
 
         # Save to Datastore
         ds_client.put(entity)
+
+        # Broadcast updates to Yjs clients
+        if yjs_server and sheet_id and updates:
+            try:
+                from yjs_sync import YjsSync
+                yjs_sync = YjsSync(yjs_server)
+                for field, value in updates.items():
+                    await yjs_sync.set_card_field(sheet_id, card_id, field, value)
+                logger.info(f"Broadcasted card updates to Yjs: {card_id} fields={list(updates.keys())}")
+            except Exception as e:
+                logger.warning(f"Failed to broadcast to Yjs (non-fatal): {e}")
 
         # Optionally mirror to GCS
         if gcs_client and bucket_name:
@@ -302,6 +329,7 @@ async def update_card(card_id: str, request: UpdateCardRequest):
             number=entity.get("number"),
             media_url=entity.get("media_url"),
             thumb_url=entity.get("thumb_url"),
+            media_type=entity.get("media_type"),
             createdAt=entity.get("createdAt")
         )
 
@@ -472,6 +500,192 @@ async def upload_media(file: UploadFile = File(...)):
         raise
     except Exception as e:
         import traceback
+        logger.error(f"Error uploading media: {e}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/api/media/upload-card")
+async def upload_card(
+    file: UploadFile = File(...),
+    sheet_id: str = Form(...),
+    card_id: str = Form(...),
+    lane_id: str = Form(...),
+    insert_index: int = Form(0),
+    title: str = Form(None)
+):
+    """
+    Upload a file and create a complete card atomically.
+    This handles:
+    1. Uploading media to GCS
+    2. Creating card entity in Datastore
+    3. Updating Yjs with card metadata
+    4. Inserting card at the front of the lane in the correct position
+
+    Args:
+        file: Uploaded media file
+        sheet_id: Sheet/room identifier
+        card_id: Pre-generated card ID from frontend
+        lane_id: Lane (column in vertical mode) to insert card into
+        insert_index: Position offset (0=first card, 1=second card, etc.)
+        title: Optional card title (defaults to filename)
+
+    Returns:
+        Card: The created card metadata
+    """
+    if ds_client is None or gcs_client is None or bucket_name is None:
+        raise HTTPException(status_code=500, detail="Required clients not initialized")
+
+    try:
+        filename = file.filename or "upload"
+        card_title = title or filename
+
+        # Step 1: Create loading placeholder in Yjs immediately (so UI shows spinner right away)
+        from yjs_sync import YjsSync
+        yjs_sync = YjsSync(yjs_server)
+
+        placeholder_data = {
+            'title': card_title,
+            'color': '#CCCCCC',
+            'prompt': '',
+            'isLoading': True
+        }
+
+        await yjs_sync.sync_card_to_sheet(
+            sheet_id=sheet_id,
+            card_id=card_id,
+            card_data=placeholder_data
+        )
+
+        # Insert card at the front of the lane with proper position offset
+        # insert_index=0 -> position 1, insert_index=1 -> position 2, etc.
+        await yjs_sync.insert_card_at_front_of_lane(
+            sheet_id=sheet_id,
+            lane_id=lane_id,
+            card_id=card_id,
+            position_offset=insert_index
+        )
+
+        logger.info(f"Created loading placeholder for card {card_id} at position {1 + insert_index} in lane {lane_id}")
+
+        # Step 2: Upload media (this is the slow part)
+        filename = file.filename or "upload"
+        is_image = media_utils.is_image(filename)
+        is_video = media_utils.is_video(filename)
+
+        if not is_image and not is_video:
+            raise HTTPException(
+                status_code=400,
+                detail="Only image and video files are allowed"
+            )
+
+        media_type = "image" if is_image else "video"
+        file_data = await file.read()
+
+        if not file_data:
+            raise HTTPException(status_code=400, detail="Empty file")
+
+        # Check file size
+        max_size = 10 * 1024 * 1024 if is_image else 100 * 1024 * 1024
+        if len(file_data) > max_size:
+            max_mb = 10 if is_image else 100
+            raise HTTPException(status_code=400, detail=f"File size must be less than {max_mb}MB")
+
+        extension = filename.split('.')[-1].lower() if '.' in filename else ('png' if is_image else 'mp4')
+        file_id = str(ulid.new())
+        content_type = media_utils.get_content_type(filename)
+
+        # Upload original media
+        media_path = media_utils.generate_media_path(file_id, extension, is_thumbnail=False)
+        media_url = media_utils.upload_to_gcs(
+            gcs_client,
+            bucket_name,
+            media_path,
+            file_data,
+            content_type
+        )
+
+        # Create and upload thumbnail
+        thumb_url = None
+        if is_image:
+            try:
+                thumb_data = media_utils.create_thumbnail(file_data, max_size=512)
+                thumb_path = media_utils.generate_media_path(file_id, 'png', is_thumbnail=True)
+                thumb_url = media_utils.upload_to_gcs(
+                    gcs_client,
+                    bucket_name,
+                    thumb_path,
+                    thumb_data,
+                    'image/png'
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create image thumbnail: {e}")
+                thumb_url = media_url
+        elif is_video:
+            try:
+                thumb_data = media_utils.create_video_thumbnail(file_data, max_size=512)
+                thumb_path = media_utils.generate_media_path(file_id, 'png', is_thumbnail=True)
+                thumb_url = media_utils.upload_to_gcs(
+                    gcs_client,
+                    bucket_name,
+                    thumb_path,
+                    thumb_data,
+                    'image/png'
+                )
+            except Exception as e:
+                logger.warning(f"Failed to create video thumbnail: {e}")
+                thumb_url = media_url
+
+        logger.info(f"Uploaded {media_type}: {media_path} (size: {len(file_data)} bytes)")
+
+        # Step 3: Create card entity in Datastore (source of truth)
+        card_data = {
+            "title": card_title,
+            "color": "#CCCCCC",
+            "prompt": "",
+            "media_url": media_url,
+            "thumb_url": thumb_url,
+            "media_type": media_type
+        }
+
+        entity = datastore.Entity(key=ds_client.key("Card", card_id))
+        entity.update({
+            "cardId": card_id,
+            **card_data
+        })
+        ds_client.put(entity)
+        logger.info(f"Created card in Datastore: {card_id}")
+
+        # Step 4: Update Yjs with final card data (removes isLoading, adds media)
+        final_card_data = {
+            **card_data,
+            "isLoading": False  # Clear loading state
+        }
+
+        sync_success = await yjs_sync.sync_card_to_sheet(
+            sheet_id=sheet_id,
+            card_id=card_id,
+            card_data=final_card_data
+        )
+
+        if not sync_success:
+            logger.warning(f"Card {card_id} saved to Datastore but failed to update in Yjs")
+
+        logger.info(f"Updated card {card_id} in Yjs with final data (cleared loading state)")
+
+        return {
+            "cardId": card_id,
+            "title": card_title,
+            "color": "#CCCCCC",
+            "prompt": "",
+            "media_url": media_url,
+            "thumb_url": thumb_url,
+            "media_type": media_type
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
         logger.error(f"Error uploading media: {e}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -592,9 +806,39 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
         row_order = room.ydoc.get_array('rowOrder')
         col_order = room.ydoc.get_array('colOrder')
         cells = room.ydoc.get_map('cells')
+        cards_metadata = room.ydoc.get_map('cardsMetadata')
 
         # Use a transaction to modify the document
-        logger.info(f"Before clear: rows={len(row_order)}, cols={len(col_order)}, cells={len(list(cells.keys()))}")
+        logger.info(f"Before clear: rows={len(row_order)}, cols={len(col_order)}, cells={len(list(cells.keys()))}, cardsMetadata={len(list(cards_metadata.keys()))}")
+
+        # Delete old cards from Datastore
+        old_card_ids = list(cards_metadata.keys())
+        if old_card_ids:
+            logger.info(f"Deleting {len(old_card_ids)} old cards from Datastore")
+            old_keys = [ds_client.key("Card", card_id) for card_id in old_card_ids]
+            ds_client.delete_multi(old_keys)
+            logger.info(f"Deleted {len(old_card_ids)} old cards from Datastore")
+
+        # Wipe all media from GCS (for prototype - removes everything in media/)
+        if gcs_client and bucket_name:
+            try:
+                bucket = gcs_client.bucket(bucket_name)
+                logger.info(f"Wiping all media from GCS bucket {bucket_name}/media/")
+
+                # List all blobs in the media/ prefix
+                blobs = list(bucket.list_blobs(prefix="media/"))
+                logger.info(f"Found {len(blobs)} media files to delete")
+
+                # Delete all media blobs in batches
+                if blobs:
+                    # GCS delete_blobs can handle batches efficiently
+                    blob_names = [blob.name for blob in blobs]
+                    for blob_name in blob_names:
+                        bucket.delete_blob(blob_name)
+
+                    logger.info(f"Deleted {len(blobs)} media files from GCS")
+            except Exception as e:
+                logger.warning(f"Failed to wipe GCS media (non-fatal): {e}")
 
         with room.ydoc.begin_transaction() as txn:
             # Clear existing data
@@ -607,7 +851,11 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
             for key in list(cells.keys()):
                 cells.pop(txn, key)
 
-            logger.info(f"After clear: rows={len(row_order)}, cols={len(col_order)}, cells={len(list(cells.keys()))}")
+            # Clear all card metadata
+            for card_id in list(cards_metadata.keys()):
+                cards_metadata.pop(txn, card_id)
+
+            logger.info(f"After clear: rows={len(row_order)}, cols={len(col_order)}, cells={len(list(cells.keys()))}, cardsMetadata={len(list(cards_metadata.keys()))}")
 
             # Add columns
             for i in range(num_cols):
@@ -696,18 +944,49 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _generate_color_png(color: str) -> io.BytesIO:
+    """
+    Generate a 16:9 PNG image with a solid color.
+
+    Args:
+        color: Hex color string (e.g., "#FF6B6B")
+
+    Returns:
+        BytesIO buffer containing the PNG image
+    """
+    # Create 16:9 image (1920x1080)
+    width, height = 1920, 1080
+
+    # Convert hex color to RGB
+    color_rgb = tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+
+    # Create image with solid color
+    img = Image.new('RGB', (width, height), color_rgb)
+
+    # Save image to buffer
+    img_buffer = io.BytesIO()
+    img.save(img_buffer, format='PNG')
+    img_buffer.seek(0)
+
+    return img_buffer
+
+
 @router.post("/api/columns/{col_id}/download")
 async def download_column(col_id: str, request: dict):
     """
     Download a column as a zip file containing:
     - cards.json: metadata for all cards in the column
     - content/: directory with numbered PNG files (1.png, 2.png, etc.)
+      - If card has media_url, download the actual media file
+      - If card has no media_url, generate a color PNG
 
     Request body should contain:
     - columnCards: array of card objects in order
     - columnTitle: title of the column
     """
     try:
+        import httpx
+
         column_cards = request.get("columnCards", [])
         column_title = request.get("columnTitle", "column")
 
@@ -734,25 +1013,31 @@ async def download_column(col_id: str, request: dict):
             # Write cards.json to zip
             zip_file.writestr("cards.json", json.dumps(cards_json, indent=2))
 
-            # Generate placeholder images for each card
-            for idx, card in enumerate(column_cards, start=1):
-                # Create 16:9 image (1920x1080)
-                width, height = 1920, 1080
-                color = card.get("color", "#CCCCCC")
+            # Generate content for each card
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                for idx, card in enumerate(column_cards, start=1):
+                    media_url = card.get("media_url")
 
-                # Convert hex color to RGB
-                color_rgb = tuple(int(color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+                    if media_url:
+                        # Download the actual media file
+                        try:
+                            logger.info(f"Downloading media for card {idx}: {media_url}")
+                            response = await client.get(media_url)
+                            response.raise_for_status()
 
-                # Create image with solid color
-                img = Image.new('RGB', (width, height), color_rgb)
-
-                # Save image to buffer
-                img_buffer = io.BytesIO()
-                img.save(img_buffer, format='PNG')
-                img_buffer.seek(0)
-
-                # Add to zip
-                zip_file.writestr(f"content/{idx}.png", img_buffer.getvalue())
+                            # Add downloaded media to zip as PNG
+                            # (Note: This assumes the media_url points to an image)
+                            zip_file.writestr(f"content/{idx}.png", response.content)
+                            logger.info(f"Downloaded media for card {idx} ({len(response.content)} bytes)")
+                        except Exception as e:
+                            logger.warning(f"Failed to download media for card {idx}: {e}, falling back to color PNG")
+                            # Fall back to generating color PNG
+                            img_buffer = _generate_color_png(card.get("color", "#CCCCCC"))
+                            zip_file.writestr(f"content/{idx}.png", img_buffer.getvalue())
+                    else:
+                        # Generate color PNG for cards without media
+                        img_buffer = _generate_color_png(card.get("color", "#CCCCCC"))
+                        zip_file.writestr(f"content/{idx}.png", img_buffer.getvalue())
 
         # Prepare zip for download
         zip_buffer.seek(0)

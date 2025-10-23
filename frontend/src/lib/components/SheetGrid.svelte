@@ -47,6 +47,7 @@
   export let onDuplicateColumn: (colId: string) => void
   export let onDeleteColumn: (colId: string) => void
   export let onColumnDownload: (colId: string) => void
+  export let onCardContextMenu: (e: MouseEvent, cardId: string) => void
 
   // Helper function to generate cell keys
   function cellKey(rowId: string, colId: string): string {
@@ -55,6 +56,16 @@
 
   // Calculate gap based on thumbnail size
   $: gap = thumbnailSize.width * 0.05
+
+  // Handle vertical scroll on frozen row - propagate to columns container
+  function handleFrozenRowWheel(e: WheelEvent) {
+    if (columnsContainerRef && Math.abs(e.deltaY) > 0) {
+      // Prevent default scroll behavior
+      e.preventDefault()
+      // Propagate vertical scroll to columns container
+      columnsContainerRef.scrollTop += e.deltaY
+    }
+  }
 </script>
 
 <div class="sheet-view">
@@ -65,6 +76,7 @@
     class="frozen-row"
     style="gap: {gap}px"
     onscroll={onSyncColumnsScroll}
+    onwheel={handleFrozenRowWheel}
   >
     {#each displayCols as colId, colIndex (colId)}
       <div class="column-wrapper" animate:flip={{ duration: 300 }}>
@@ -245,6 +257,7 @@
         onDuplicateColumn={onDuplicateColumn}
         onDeleteColumn={onDeleteColumn}
         onColumnDownload={onColumnDownload}
+        onCardContextMenu={onCardContextMenu}
       />
     {/each}
   </div>

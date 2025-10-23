@@ -10,7 +10,8 @@ export interface SheetConnection {
   rowOrder: Y.Array<string>
   colOrder: Y.Array<string>
   cells: Y.Map<{ cardId: string }>
-  cardsMetadata: Y.Map<any>
+  cardsMetadata: Y.Map<Y.Map<any>>  // Nested Y.Maps for granular updates
+  shotTitles: Y.Map<string>
 }
 
 /**
@@ -62,9 +63,99 @@ export function connectSheet(wsUrl: string, sheetId: string): SheetConnection {
   const rowOrder = doc.getArray<string>('rowOrder')
   const colOrder = doc.getArray<string>('colOrder')
   const cells = doc.getMap<{ cardId: string }>('cells')
-  const cardsMetadata = doc.getMap<any>('cardsMetadata')
+  const cardsMetadata = doc.getMap<Y.Map<any>>('cardsMetadata')
+  const shotTitles = doc.getMap<string>('shotTitles')
 
-  return { doc, provider, rowOrder, colOrder, cells, cardsMetadata }
+  return { doc, provider, rowOrder, colOrder, cells, cardsMetadata, shotTitles }
+}
+
+/**
+ * Helper: Convert Y.Map card to plain object
+ * Also handles legacy plain objects for backward compatibility
+ */
+export function cardMapToObject(cardMap: Y.Map<any> | any): any {
+  if (!cardMap) return null
+
+  // If it's already a plain object (legacy data), return as-is
+  if (!(cardMap instanceof Y.Map)) {
+    return cardMap
+  }
+
+  const obj: any = {}
+  cardMap.forEach((value, key) => {
+    // Handle Y.Text fields
+    if (value instanceof Y.Text) {
+      obj[key] = value.toString()
+    } else {
+      obj[key] = value
+    }
+  })
+  return obj
+}
+
+/**
+ * Helper: Get a card as a plain object
+ */
+export function getCard(sheet: SheetConnection, cardId: string): any {
+  const cardMap = sheet.cardsMetadata.get(cardId)
+  if (!cardMap) return null
+
+  return {
+    id: cardId,
+    ...cardMapToObject(cardMap)
+  }
+}
+
+/**
+ * Helper: Set a single field on a card
+ */
+export function setCardField(sheet: SheetConnection, cardId: string, field: string, value: any): void {
+  let cardMap = sheet.cardsMetadata.get(cardId)
+  if (!cardMap) {
+    cardMap = new Y.Map()
+    sheet.cardsMetadata.set(cardId, cardMap)
+  }
+  cardMap.set(field, value)
+}
+
+/**
+ * Helper: Get a single field from a card
+ */
+export function getCardField(sheet: SheetConnection, cardId: string, field: string): any {
+  const cardMap = sheet.cardsMetadata.get(cardId)
+  if (!cardMap) return null
+
+  const value = cardMap.get(field)
+  // Handle Y.Text fields
+  if (value instanceof Y.Text) {
+    return value.toString()
+  }
+  return value
+}
+
+/**
+ * Helper: Set entire card (creates nested Y.Map)
+ */
+export function setCard(sheet: SheetConnection, cardId: string, card: any): void {
+  let cardMap = sheet.cardsMetadata.get(cardId)
+  if (!cardMap) {
+    cardMap = new Y.Map()
+    sheet.cardsMetadata.set(cardId, cardMap)
+  }
+
+  // Set all fields
+  Object.keys(card).forEach(key => {
+    if (key !== 'id' && key !== 'cardId') {
+      cardMap!.set(key, card[key])
+    }
+  })
+}
+
+/**
+ * Helper: Delete a card
+ */
+export function deleteCardMetadata(sheet: SheetConnection, cardId: string): void {
+  sheet.cardsMetadata.delete(cardId)
 }
 
 /**

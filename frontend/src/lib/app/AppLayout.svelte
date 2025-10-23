@@ -30,10 +30,14 @@
     stickyTopRow: boolean
     /** Open ellipsis menu ID */
     openEllipsisMenu: string | null
+    /** Current orientation */
+    orientation: 'vertical' | 'horizontal'
     /** Callback: Undo action */
     onUndo: () => void
     /** Callback: Redo action */
     onRedo: () => void
+    /** Callback: Set orientation */
+    onSetOrientation: (orientation: 'vertical' | 'horizontal') => void
     /** Callback: Regenerate sheet (dev) */
     onRegenerate: () => void
     /** Callback: Toggle thumbnail menu */
@@ -73,8 +77,10 @@
     isSoundMuted,
     stickyTopRow,
     openEllipsisMenu,
+    orientation,
     onUndo,
     onRedo,
+    onSetOrientation,
     onRegenerate,
     onToggleThumbnailMenu,
     onSelectThumbnailSize,
@@ -101,8 +107,10 @@
     {isSoundMuted}
     {stickyTopRow}
     {openEllipsisMenu}
+    {orientation}
     {onUndo}
     {onRedo}
+    {onSetOrientation}
     {onRegenerate}
     {onToggleThumbnailMenu}
     {onSelectThumbnailSize}

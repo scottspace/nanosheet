@@ -19,7 +19,7 @@ export interface ColumnOperationCallbacks {
   /**
    * Show a toast notification
    */
-  showToastNotification: (message: string, duration: number) => void
+  showToast: (message: string) => void
 
   /**
    * Show a confirmation dialog
@@ -249,12 +249,12 @@ export class ColumnOperations {
       }).filter(card => card !== null)
 
       if (columnCards.length === 0) {
-        this.callbacks.showToastNotification('No cards in this column to export', 3000)
+        this.callbacks.showToast('No cards in this column to export')
         return
       }
 
       // Show downloading toast
-      this.callbacks.showToastNotification('Downloading...', 0)
+      this.callbacks.showToast('Downloading...')
 
       // Call backend to generate zip
       const response = await fetch(`${this.apiUrl}/api/columns/${colId}/download`, {
@@ -283,11 +283,11 @@ export class ColumnOperations {
 
       console.log('[ColumnOperations.handleColumnDownload] Downloaded column:', colId)
 
-      // Show success toast (note: caller should handle hiding the "Downloading..." toast first)
-      this.callbacks.showToastNotification('Download complete!', 3000)
+      // Show success toast
+      this.callbacks.showToast('Download complete!')
     } catch (error) {
       console.error('[ColumnOperations.handleColumnDownload] Error downloading column:', error)
-      this.callbacks.showToastNotification('Failed to download column', 3000)
+      this.callbacks.showToast('Failed to download column')
     }
   }
 

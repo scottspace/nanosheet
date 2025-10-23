@@ -41,6 +41,7 @@
   export let onDuplicateColumn: (colId: string) => void
   export let onDeleteColumn: (colId: string) => void
   export let onColumnDownload: (colId: string) => void
+  export let onCardContextMenu: (e: MouseEvent, cardId: string) => void
 
   // Helper function to generate cell keys
   function cellKey(rowId: string, colId: string): string {
@@ -55,21 +56,15 @@
       class="column-drop-indicator"
       style="min-width: {thumbnailSize.width}px;"
       ondragover={(e) => { e.preventDefault(); onColumnDragOver(e, colId); }}
-      ondrop={(e) => { console.log('[drop indicator ondrop]'); onColumnDrop(e, colId); }}
+      ondrop={(e) => onColumnDrop(e, colId)}
     ></div>
   {/if}
 
   <div
     class="column {draggedColumn === colId ? 'column-dragging' : ''}"
     style="width: {thumbnailSize.width}px; gap: {thumbnailSize.width * 0.035}px"
-    ondragover={(e) => {
-      console.log('[column ondragover] colId:', colId, 'isColumnDragging:', isColumnDragging);
-      onColumnDragOver(e, colId);
-    }}
-    ondrop={(e) => {
-      console.log('[column ondrop] colId:', colId, 'isColumnDragging:', isColumnDragging);
-      onColumnDrop(e, colId);
-    }}
+    ondragover={(e) => onColumnDragOver(e, colId)}
+    ondrop={(e) => onColumnDrop(e, colId)}
   >
     <!-- Get all cards in this lane (skip first time if sticky) -->
     {#each (stickyTopRow ? displayRows.slice(1) : displayRows) as rowId (rowId)}
@@ -135,20 +130,14 @@
         shotTitle=""
         onDragStart={(e, r, c, cId) => !stickyTopRow && isFirstRow ? onColumnDragStart(e, colId) : onDragStart(e, r, c, cId)}
         onDragOver={(e, r, c, el) => {
-          console.log('[card ondragover] rowId:', rowId, 'colId:', colId, 'isColumnDragging:', isColumnDragging);
           if (isColumnDragging) {
             e.preventDefault();
-            console.log('[card ondragover] Returning early for column drag');
             return;
           }
           (!stickyTopRow && isFirstRow ? onColumnDragOver(e, colId) : onDragOver(e, r, c, el));
         }}
         onDrop={(e, r, c) => {
-          console.log('[card ondrop] rowId:', rowId, 'colId:', colId, 'isColumnDragging:', isColumnDragging);
-          if (isColumnDragging) {
-            console.log('[card ondrop] Returning early for column drag');
-            return;
-          }
+          if (isColumnDragging) return;
           (!stickyTopRow && isFirstRow ? onColumnDrop(e, colId) : onDrop(e, r, c));
         }}
         onDragEnd={(e) => !stickyTopRow && isFirstRow ? onResetColumnDrag() : onDragEnd(e)}
@@ -162,6 +151,7 @@
         onCardTitleChange={onCardTitleChange}
         onFileUpload={onFileUpload}
         onShotTitleChange={onShotTitleChange}
+        onCardContextMenu={onCardContextMenu}
       />
     {/each}
   </div>
@@ -172,7 +162,7 @@
       class="column-drop-indicator"
       style="min-width: {thumbnailSize.width}px;"
       ondragover={(e) => { e.preventDefault(); onColumnDragOver(e, colId); }}
-      ondrop={(e) => { console.log('[scrollable drop indicator after ondrop]'); onColumnDrop(e, colId); }}
+      ondrop={(e) => onColumnDrop(e, colId)}
     ></div>
   {/if}
 </div>

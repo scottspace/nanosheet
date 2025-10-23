@@ -16,6 +16,7 @@
 
 import type { OrientationStrategy } from '../strategies/orientation/OrientationStrategy'
 import type { SheetConnection } from '../../ySheet'
+import { setCard, getCard } from '../../ySheet'
 
 /**
  * Undo operation types
@@ -41,6 +42,9 @@ export interface UndoOperation {
     title: string
     color: string
     prompt: string
+    thumb_url?: string | null
+    media_url?: string | null
+    media_type?: string | null
   }
 
   // For column operations
@@ -357,19 +361,32 @@ export class UndoRedoOperations {
 
     // Restore previous card state via API
     try {
+      const updateData: any = {
+        title: operation.previousState.title,
+        color: operation.previousState.color,
+        prompt: operation.previousState.prompt
+      }
+
+      // Include media fields if they were saved in the undo state
+      if ('thumb_url' in operation.previousState) {
+        updateData.thumb_url = operation.previousState.thumb_url
+      }
+      if ('media_url' in operation.previousState) {
+        updateData.media_url = operation.previousState.media_url
+      }
+      if ('media_type' in operation.previousState) {
+        updateData.media_type = operation.previousState.media_type
+      }
+
       const response = await fetch(`${this.apiUrl}/api/cards/${operation.previousState.cardId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: operation.previousState.title,
-          color: operation.previousState.color,
-          prompt: operation.previousState.prompt
-        })
+        body: JSON.stringify(updateData)
       })
 
       if (response.ok) {
         const restoredCard = await response.json()
-        sheet.cardsMetadata.set(operation.previousState.cardId, restoredCard)
+        setCard(sheet, operation.previousState.cardId, restoredCard)
         console.log('[UndoRedoOperations.undoEdit] Restored card edit:', operation.previousState.cardId)
 
         // Save current state to redo stack
@@ -381,7 +398,10 @@ export class UndoRedoOperations {
               cardId: currentCard.cardId,
               title: currentCard.title,
               color: currentCard.color,
-              prompt: currentCard.prompt || ''
+              prompt: currentCard.prompt || '',
+              thumb_url: currentCard.thumb_url,
+              media_url: currentCard.media_url,
+              media_type: currentCard.media_type
             }
           })
         }
@@ -609,19 +629,32 @@ export class UndoRedoOperations {
 
     // Apply the "redo" state via API
     try {
+      const updateData: any = {
+        title: operation.previousState.title,
+        color: operation.previousState.color,
+        prompt: operation.previousState.prompt
+      }
+
+      // Include media fields if they were saved in the undo state
+      if ('thumb_url' in operation.previousState) {
+        updateData.thumb_url = operation.previousState.thumb_url
+      }
+      if ('media_url' in operation.previousState) {
+        updateData.media_url = operation.previousState.media_url
+      }
+      if ('media_type' in operation.previousState) {
+        updateData.media_type = operation.previousState.media_type
+      }
+
       const response = await fetch(`${this.apiUrl}/api/cards/${operation.previousState.cardId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          title: operation.previousState.title,
-          color: operation.previousState.color,
-          prompt: operation.previousState.prompt
-        })
+        body: JSON.stringify(updateData)
       })
 
       if (response.ok) {
         const updatedCard = await response.json()
-        sheet.cardsMetadata.set(operation.previousState.cardId, updatedCard)
+        setCard(sheet, operation.previousState.cardId, updatedCard)
         console.log('[UndoRedoOperations.redoEdit] Reapplied card edit:', operation.previousState.cardId)
 
         // Save current state to undo stack
@@ -633,7 +666,10 @@ export class UndoRedoOperations {
               cardId: currentCard.cardId,
               title: currentCard.title,
               color: currentCard.color,
-              prompt: currentCard.prompt || ''
+              prompt: currentCard.prompt || '',
+              thumb_url: currentCard.thumb_url,
+              media_url: currentCard.media_url,
+              media_type: currentCard.media_type
             }
           })
         }

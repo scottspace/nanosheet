@@ -10,6 +10,7 @@
 
 import type { OrientationStrategy } from '../strategies/orientation/OrientationStrategy'
 import type { SheetConnection } from '../../ySheet'
+import { setCardField, getCard } from '../../ySheet'
 
 /**
  * Callbacks for card operations
@@ -19,6 +20,11 @@ export interface CardOperationCallbacks {
    * Show a confirmation dialog
    */
   showConfirm: (message: string, onConfirm: () => void) => void
+
+  /**
+   * Show a toast notification
+   */
+  showToast: (message: string) => void
 
   /**
    * Record an undo operation
@@ -41,6 +47,11 @@ export interface CardOperationCallbacks {
    * Clear the redo stack after a new operation
    */
   onClearRedo: () => void
+
+  /**
+   * Delete an entire column (called when deleting from phantom row)
+   */
+  onDeleteColumn?: (colId: string) => void
 }
 
 /**
@@ -151,17 +162,45 @@ export class CardOperations {
       this.callbacks.showConfirm(
         `Delete this entire lane? This will delete ${cardsInLane} card${cardsInLane !== 1 ? 's' : ''} and cannot be undone.`,
         () => {
-          // Note: This calls back to ColumnOperations.deleteColumn
-          // The caller should handle this by passing in the deleteColumn function
-          console.warn('[CardOperations.handleDeleteCard] Attempted to delete entire lane - caller should handle this')
+          if (this.callbacks.onDeleteColumn) {
+            this.callbacks.onDeleteColumn(colId)
+          } else {
+            console.error('[CardOperations.handleDeleteCard] onDeleteColumn callback not provided')
+          }
         }
       )
     } else {
-      // Save to undo stack before deleting single card
-      const key = this.strategy.cellKey(time, lane)
+      // Check if deleting this card will cause the lane to be empty
       const cellsMap = this.getCellsMap()
+      const key = this.strategy.cellKey(time, lane)
       const cell = cellsMap.get(key)
-      if (cell && cell.cardId) {
+
+      // Count cards in this lane BEFORE deletion
+      const cardsInLaneBefore = timeline.filter(t => {
+        const k = this.strategy.cellKey(t, lane)
+        return cellsMap.get(k) !== undefined
+      }).length
+
+      // If this is the last card, save entire lane for restoration
+      if (cardsInLaneBefore === 1 && cell && cell.cardId) {
+        const laneOrder = orientation === 'vertical' ? sheet.colOrder : sheet.rowOrder
+        const lanes = laneOrder.toArray()
+        const laneIndex = lanes.indexOf(lane)
+
+        // Save as deleteColumn operation to restore lane position
+        this.callbacks.onRecordUndo({
+          type: 'deleteColumn',
+          userId: this.userId,
+          rowId,
+          colId,
+          cardId: cell.cardId,
+          columnIndex: laneIndex,
+          columnCells: new Map([[key, { cardId: cell.cardId }]])
+        })
+        this.callbacks.onClearRedo()
+        console.log('[CardOperations.handleDeleteCard] Saved lane deletion to undo stack')
+      } else if (cell && cell.cardId) {
+        // Normal card deletion
         this.callbacks.onRecordUndo({
           type: 'delete',
           userId: this.userId,
@@ -170,7 +209,7 @@ export class CardOperations {
           cardId: cell.cardId
         })
         this.callbacks.onClearRedo()
-        console.log('[CardOperations.handleDeleteCard] Saved to undo stack')
+        console.log('[CardOperations.handleDeleteCard] Saved card deletion to undo stack')
       }
 
       // Delete the card
@@ -194,6 +233,28 @@ export class CardOperations {
       }
 
       console.log('[CardOperations.handleDeleteCard] Deleted card and shifted lane up:', time, lane)
+
+      // Check if the lane is now empty (no cards at all, including header)
+      const laneHasCards = allTimes.some(t => {
+        const key = this.strategy.cellKey(t, lane)
+        return sheet.cells.get(key) !== undefined
+      })
+
+      if (!laneHasCards) {
+        // Lane is empty, remove it and compact remaining lanes (shift left)
+        console.log('[CardOperations.handleDeleteCard] Lane is empty, removing:', lane)
+
+        // Get current lane order (colOrder in vertical mode, rowOrder in horizontal)
+        const laneOrder = orientation === 'vertical' ? sheet.colOrder : sheet.rowOrder
+        const lanes = laneOrder.toArray()
+        const laneIndex = lanes.indexOf(lane)
+
+        if (laneIndex !== -1) {
+          // Remove the empty lane from the order (this shifts remaining lanes left automatically)
+          laneOrder.delete(laneIndex, 1)
+          console.log('[CardOperations.handleDeleteCard] Removed empty lane at index:', laneIndex)
+        }
+      }
     }
   }
 
@@ -254,11 +315,10 @@ export class CardOperations {
       this.cardTitlePreviousValues.set(cardId, currentCard.title)
     }
 
-    // Update Yjs immediately for real-time sync
+    // Update Yjs immediately for real-time sync (granular update - only title field)
     const sheet = this.getSheet()
     if (sheet) {
-      const updatedCard = { ...currentCard, title: newTitle }
-      sheet.cardsMetadata.set(cardId, updatedCard)
+      setCardField(sheet, cardId, 'title', newTitle)
     }
 
     // Debounce API call to backend (save after 500ms of no typing)
@@ -347,12 +407,8 @@ export class CardOperations {
       })
 
       if (response.ok) {
-        // Update Yjs with backend response (ensures consistency)
-        const updatedCard = await response.json()
-        const sheet = this.getSheet()
-        if (sheet) {
-          sheet.cardsMetadata.set(cardId, updatedCard)
-        }
+        // Yjs already updated via handleCardTitleInput, no need to update again
+        // Backend is now in sync
         console.log('[CardOperations.saveCardTitleToBackend] Card title updated successfully')
       } else {
         console.error('[CardOperations.saveCardTitleToBackend] Failed to update card:', response.statusText)
@@ -362,5 +418,217 @@ export class CardOperations {
       console.error('[CardOperations.saveCardTitleToBackend] Error updating card:', error)
       // Note: Caller might want to handle rolling back the undo entry
     }
+  }
+
+  /**
+   * Set cover image for a lane
+   *
+   * Takes the thumbnail (or color if no thumbnail) from the specified card
+   * and applies it to the frozen header card for that lane. If the card has
+   * no thumbnail, copies its color and clears any existing media.
+   *
+   * This operation is undo-able.
+   *
+   * @param cardId - ID of the card whose thumbnail/color to use
+   */
+  async handleSetCoverImage(cardId: string): Promise<void> {
+    const sheet = this.getSheet()
+    if (!sheet) return
+
+    const cardsMetadata = this.getCardsMetadata()
+    const card = cardsMetadata.get(cardId)
+    if (!card) {
+      this.callbacks.showToast('Card not found')
+      return
+    }
+
+    // Find which lane this card is in
+    const orientation = this.getOrientation()
+    const cellsMap = this.getCellsMap()
+
+    for (const [cellKey, cell] of cellsMap.entries()) {
+      if (cell.cardId === cardId) {
+        const [rowId, colId] = cellKey.split(':')
+        const laneId = orientation === 'vertical' ? colId : rowId
+
+        // Find the frozen header card for this lane
+        const timeline = this.getTimeline()
+        const frozenTime = timeline[0]
+        const frozenKey = orientation === 'vertical'
+          ? `${frozenTime}:${laneId}`
+          : `${laneId}:${frozenTime}`
+
+        const frozenCell = cellsMap.get(frozenKey)
+        if (frozenCell && frozenCell.cardId) {
+          const frozenCardId = frozenCell.cardId
+          const frozenCard = cardsMetadata.get(frozenCardId)
+          if (frozenCard) {
+            // Save previous state for undo (including media fields)
+            this.callbacks.onRecordUndo({
+              type: 'edit',
+              userId: this.userId,
+              previousState: {
+                cardId: frozenCardId,
+                title: frozenCard.title,
+                color: frozenCard.color,
+                prompt: frozenCard.prompt || '',
+                thumb_url: frozenCard.thumb_url,
+                media_url: frozenCard.media_url,
+                media_type: frozenCard.media_type
+              }
+            })
+            this.callbacks.onClearRedo()
+
+            // Prepare update based on whether card has thumbnail or just color
+            let ysjUpdate: Record<string, any>
+            let backendUpdate: any
+
+            console.log('[CardOperations.handleSetCoverImage] Source card:', card)
+            console.log('[CardOperations.handleSetCoverImage] Has thumb_url:', !!card.thumb_url)
+
+            if (card.thumb_url) {
+              // Card has thumbnail - copy media fields
+              ysjUpdate = {
+                thumb_url: card.thumb_url,
+                media_url: card.media_url,
+                media_type: card.media_type,
+                color: card.color
+              }
+              backendUpdate = {
+                thumb_url: card.thumb_url,
+                media_url: card.media_url,
+                media_type: card.media_type,
+                color: card.color
+              }
+            } else {
+              // Card has no thumbnail - copy color and clear media fields
+              ysjUpdate = {
+                color: card.color,
+                thumb_url: null,
+                media_url: null,
+                media_type: null
+              }
+              backendUpdate = {
+                color: card.color,
+                thumb_url: null,
+                media_url: null,
+                media_type: null
+              }
+            }
+
+            // Update only the changed fields in Yjs
+            console.log('[CardOperations.handleSetCoverImage] Frozen card ID:', frozenCardId)
+            console.log('[CardOperations.handleSetCoverImage] Yjs updates:', ysjUpdate)
+
+            const cardMap = sheet.cardsMetadata.get(frozenCardId)
+            console.log('[CardOperations.handleSetCoverImage] Card map exists:', !!cardMap)
+
+            if (cardMap) {
+              // Use a transaction to batch all updates together
+              sheet.doc.transact(() => {
+                for (const [key, value] of Object.entries(ysjUpdate)) {
+                  if (value === null) {
+                    // Delete the field if value is null (only if it exists)
+                    if (cardMap.has(key)) {
+                      console.log(`[CardOperations.handleSetCoverImage] Deleting field ${key}`)
+                      cardMap.delete(key)
+                    }
+                  } else {
+                    // Set the field if value is not null
+                    console.log(`[CardOperations.handleSetCoverImage] Setting field ${key} to`, value)
+                    cardMap.set(key, value)
+                  }
+                }
+              })
+
+              // Verify the update
+              console.log('[CardOperations.handleSetCoverImage] After update - color:', cardMap.get('color'))
+              console.log('[CardOperations.handleSetCoverImage] After update - thumb_url:', cardMap.get('thumb_url'))
+            }
+
+            // Update backend
+            try {
+              console.log('[CardOperations.handleSetCoverImage] Sending to backend:', backendUpdate)
+
+              const response = await fetch(`${this.apiUrl}/api/cards/${frozenCardId}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(backendUpdate)
+              })
+
+              if (response.ok) {
+                console.log('[CardOperations.handleSetCoverImage] Backend update successful')
+              } else {
+                const errorText = await response.text()
+                console.error('[CardOperations.handleSetCoverImage] Backend error:', response.status, errorText)
+                this.callbacks.showToast('Failed to update cover')
+              }
+            } catch (error) {
+              console.error('[CardOperations.handleSetCoverImage] Error:', error)
+              this.callbacks.showToast('Failed to update cover')
+            }
+          }
+        }
+        break
+      }
+    }
+  }
+
+  /**
+   * Download card media and JSON metadata
+   *
+   * Downloads both the media file (if exists) and a JSON file containing
+   * the card's metadata.
+   *
+   * @param cardId - ID of the card to download
+   */
+  async handleDownloadCard(cardId: string): Promise<void> {
+    const cardsMetadata = this.getCardsMetadata()
+    const card = cardsMetadata.get(cardId)
+    if (!card) return
+
+    const cardName = card.title || 'card'
+
+    // Download media if it exists
+    if (card.media_url) {
+      try {
+        const response = await fetch(card.media_url)
+        const blob = await response.blob()
+        const extension = card.media_type === 'video' ? 'mp4' : 'png'
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = `${cardName}.${extension}`
+        document.body.appendChild(a)
+        a.click()
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
+      } catch (error) {
+        console.error('[CardOperations.handleDownloadCard] Failed to download media:', error)
+      }
+    }
+
+    // Download JSON metadata
+    const metadata = {
+      cardId: card.cardId,
+      title: card.title,
+      color: card.color,
+      prompt: card.prompt,
+      number: card.number,
+      media_url: card.media_url,
+      thumb_url: card.thumb_url,
+      media_type: card.media_type
+    }
+    const jsonBlob = new Blob([JSON.stringify(metadata, null, 2)], { type: 'application/json' })
+    const jsonUrl = window.URL.createObjectURL(jsonBlob)
+    const jsonLink = document.createElement('a')
+    jsonLink.href = jsonUrl
+    jsonLink.download = `${cardName}.json`
+    document.body.appendChild(jsonLink)
+    jsonLink.click()
+    window.URL.revokeObjectURL(jsonUrl)
+    document.body.removeChild(jsonLink)
+
+    this.callbacks.showToast('Card downloaded')
   }
 }

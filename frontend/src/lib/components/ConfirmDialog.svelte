@@ -50,12 +50,15 @@
     width: 90%;
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
     animation: slideUp 0.2s ease;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
   }
 
   .confirm-message {
     color: rgba(255, 255, 255, 0.9);
-    font-size: 0.95rem;
+    font-size: 0.9375rem;
+    font-weight: 400;
     line-height: 1.5;
+    letter-spacing: -0.01em;
     margin-bottom: 1.5rem;
     white-space: pre-line;
   }
@@ -71,9 +74,11 @@
     border-radius: 8px;
     font-size: 0.875rem;
     font-weight: 500;
+    letter-spacing: -0.01em;
     cursor: pointer;
     transition: all 0.2s ease;
     border: none;
+    font-family: inherit;
   }
 
   .confirm-btn-cancel {

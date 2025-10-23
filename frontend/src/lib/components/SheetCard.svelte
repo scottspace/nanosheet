@@ -32,6 +32,7 @@
   export let onCardTitleChange: (cardId: string, value: string) => void
   export let onFileUpload: (e: Event, rowId: string, colId: string) => void
   export let onShotTitleChange: (colId: string, value: string) => void
+  export let onCardContextMenu: (e: MouseEvent, cardId: string) => void
 
   // Computed values
   $: isCardDragging = isDragging && draggedCard?.cardId === cardId
@@ -47,11 +48,37 @@
     !dragPreview.insertBefore &&
     !isColumnDragging
 
+  // Prevent accidental double-clicks after delete
+  let ignoreDoubleClick = false
+  let ignoreDoubleClickTimeout: number | null = null
+
+  function handleDelete(e: Event) {
+    e.stopPropagation()
+    onDeleteCard(rowId, colId)
+
+    // Ignore double-clicks for 500ms after delete to prevent accidental modal opens
+    ignoreDoubleClick = true
+    if (ignoreDoubleClickTimeout) {
+      clearTimeout(ignoreDoubleClickTimeout)
+    }
+    ignoreDoubleClickTimeout = setTimeout(() => {
+      ignoreDoubleClick = false
+    }, 500) as unknown as number
+  }
+
+  function handleDoubleClick() {
+    if (!ignoreDoubleClick) {
+      onCardDoubleClick(cardId)
+    }
+  }
+
   function handleFileClick() {
     document.getElementById(`upload-${rowId}-${colId}`)?.click()
   }
 </script>
 
+<!-- Cell wrapper with data attributes for scrolling -->
+<div class="cell-wrapper" data-row={rowId} data-col={colId}>
 <!-- Show shot header if this is first row and sticky is disabled -->
 {#if showShotHeader}
   <div class="shot-header-title">
@@ -101,7 +128,11 @@
       (isColumnDragHandle ? onColumnDrop(e, colId) : onDrop(e, rowId, colId));
     }}
     ondragend={(e) => isColumnDragHandle ? onResetColumnDrag() : onDragEnd(e)}
-    ondblclick={() => onCardDoubleClick(cardId)}
+    ondblclick={handleDoubleClick}
+    oncontextmenu={(e) => {
+      e.preventDefault();
+      onCardContextMenu(e, cardId);
+    }}
   >
     {#if card.isLoading}
       <!-- Loading spinner -->
@@ -136,10 +167,7 @@
     {/if}
     <button
       class="btn-delete"
-      onclick={(e) => {
-        e.stopPropagation()
-        onDeleteCard(rowId, colId)
-      }}
+      onclick={handleDelete}
     >
       ×
     </button>
@@ -167,6 +195,7 @@
       type="file"
       id="upload-{rowId}-{colId}"
       accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,video/mp4,video/quicktime,video/webm"
+      multiple
       style="display: none"
       onchange={(e) => onFileUpload(e, rowId, colId)}
     />
@@ -199,8 +228,14 @@
     ondragover={(e) => e.preventDefault()}
   ></div>
 {/if}
+</div><!-- End cell-wrapper -->
 
 <style>
+  /* Cell wrapper - transparent container for data attributes */
+  .cell-wrapper {
+    display: contents; /* Don't affect layout, just provide DOM node for querySelector */
+  }
+
   /* Delete button */
   .btn-delete {
     position: absolute;

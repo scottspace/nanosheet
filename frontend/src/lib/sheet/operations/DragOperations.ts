@@ -78,6 +78,8 @@ export class DragOperations {
   private userId: string
   private getSheet: () => SheetConnection | null
   private getTimeline: () => string[]
+  private lastDragOverTime: number = 0
+  private autoScrollInterval: number | null = null
 
   /**
    * Constructor
@@ -147,17 +149,31 @@ export class DragOperations {
    */
   handleDragOver(event: DragEvent, targetTime: string, targetLane: string, cardElement: HTMLElement): void {
     event.preventDefault()
+
+    // Throttle to ~60fps to prevent excessive processing
+    const now = Date.now()
+    if (now - this.lastDragOverTime < 16) {
+      return
+    }
+    this.lastDragOverTime = now
+
     if (!this.state.draggedCard || !this.state.isDragging) {
-      console.log('[DragOperations.handleDragOver] Skipped - no draggedCard or not dragging')
       return
     }
 
     const timeline = this.getTimeline()
 
-    // Skip frozen time position as drop target (first time slot, which is header row in vertical mode)
-    if (timeline.length > 0 && targetTime === timeline[0]) {
+    // Calculate insert position first
+    const rect = cardElement.getBoundingClientRect()
+    const mouseY = event.clientY
+    const cardMidpoint = rect.top + (rect.height / 2)
+    const insertBefore = mouseY < cardMidpoint
+
+    // Skip frozen time position as drop target ONLY if trying to insert before it
+    // Allow inserting after the frozen row (which puts card in position 1)
+    if (timeline.length > 0 && targetTime === timeline[0] && insertBefore) {
       this.state.dragPreview = null
-      console.log('[DragOperations.handleDragOver] Skipped - frozen time position')
+      console.log('[DragOperations.handleDragOver] Skipped - cannot insert before frozen header row')
       return
     }
 
@@ -167,24 +183,39 @@ export class DragOperations {
       return
     }
 
+    // Check if this would be a no-op move (dragging to adjacent position that results in same final position)
+    // Only check if in the same lane
+    if (this.state.draggedCard.laneId === targetLane) {
+      const draggedIndex = timeline.indexOf(this.state.draggedCard.timeId)
+      const targetIndex = timeline.indexOf(targetTime)
+      const insertAtIndex = insertBefore ? targetIndex : targetIndex + 1
+
+      // If the insert position is the same as current position, or directly after current position
+      // (which would be the same after removing the dragged card), don't show preview
+      if (insertAtIndex === draggedIndex || insertAtIndex === draggedIndex + 1) {
+        this.state.dragPreview = null
+        return
+      }
+    }
+
     // Track mouse position
     this.state.dragMousePos = { x: event.clientX, y: event.clientY }
 
-    // Calculate if mouse is in top or bottom half of card (vertical orientation)
-    // In future phases, this will adapt based on orientation
-    const rect = cardElement.getBoundingClientRect()
-    const mouseY = event.clientY
-    const cardMidpoint = rect.top + (rect.height / 2)
-    const insertBefore = mouseY < cardMidpoint
+    // Auto-scroll when dragging near viewport edges
+    this.handleAutoScroll(event.clientY)
 
-    // Update preview
-    this.state.dragPreview = {
-      targetLane,
-      targetTime,
-      insertBefore
+    // Only update preview if it changed (avoid excessive reactivity triggers)
+    const currentPreview = this.state.dragPreview
+    if (!currentPreview ||
+        currentPreview.targetLane !== targetLane ||
+        currentPreview.targetTime !== targetTime ||
+        currentPreview.insertBefore !== insertBefore) {
+      this.state.dragPreview = {
+        targetLane,
+        targetTime,
+        insertBefore
+      }
     }
-
-    console.log('[DragOperations.handleDragOver] Updated preview:', { targetTime, targetLane, insertBefore })
 
     if (event.dataTransfer) {
       event.dataTransfer.dropEffect = 'move'
@@ -203,6 +234,66 @@ export class DragOperations {
     this.state.isDragging = false
     this.state.dragPreview = null
     this.state.draggedCard = null
+
+    // Stop auto-scrolling
+    this.stopAutoScroll()
+  }
+
+  /**
+   * Handle auto-scrolling when dragging near viewport edges
+   *
+   * @param mouseY - Current mouse Y position
+   */
+  private handleAutoScroll(mouseY: number): void {
+    const scrollThreshold = 100 // Distance from edge to trigger scroll
+    const scrollSpeed = 10 // Pixels to scroll per frame
+
+    const viewportHeight = window.innerHeight
+    const distanceFromTop = mouseY
+    const distanceFromBottom = viewportHeight - mouseY
+
+    // Determine scroll direction
+    let scrollDirection: 'up' | 'down' | null = null
+
+    if (distanceFromTop < scrollThreshold) {
+      scrollDirection = 'up'
+    } else if (distanceFromBottom < scrollThreshold) {
+      scrollDirection = 'down'
+    }
+
+    // Start/stop auto-scroll based on direction
+    if (scrollDirection) {
+      if (!this.autoScrollInterval) {
+        this.startAutoScroll(scrollDirection, scrollSpeed)
+      }
+    } else {
+      this.stopAutoScroll()
+    }
+  }
+
+  /**
+   * Start auto-scrolling in the specified direction
+   *
+   * @param direction - 'up' or 'down'
+   * @param speed - Pixels to scroll per frame
+   */
+  private startAutoScroll(direction: 'up' | 'down', speed: number): void {
+    this.stopAutoScroll() // Clear any existing interval
+
+    this.autoScrollInterval = window.setInterval(() => {
+      const scrollAmount = direction === 'up' ? -speed : speed
+      window.scrollBy(0, scrollAmount)
+    }, 16) as unknown as number // ~60fps
+  }
+
+  /**
+   * Stop auto-scrolling
+   */
+  private stopAutoScroll(): void {
+    if (this.autoScrollInterval) {
+      clearInterval(this.autoScrollInterval)
+      this.autoScrollInterval = null
+    }
   }
 
   /**
@@ -223,11 +314,10 @@ export class DragOperations {
     event.preventDefault()
     const sheet = this.getSheet()
 
-    if (!sheet || !this.state.draggedCard || !this.state.dragPreview) {
+    if (!sheet || !this.state.draggedCard) {
       console.log('[DragOperations.handleDrop] Missing required data:', {
         hasSheet: !!sheet,
-        hasDraggedCard: !!this.state.draggedCard,
-        hasDragPreview: !!this.state.dragPreview
+        hasDraggedCard: !!this.state.draggedCard
       })
       this.state.isDragging = false
       this.state.dragPreview = null
@@ -236,7 +326,11 @@ export class DragOperations {
     }
 
     const { timeId: fromTime, laneId: fromLane, cardId } = this.state.draggedCard
-    const { targetTime, targetLane, insertBefore } = this.state.dragPreview
+
+    // Use dragPreview if available, otherwise use drop event target (for blank cells)
+    let targetTime = this.state.dragPreview?.targetTime || toTime
+    let targetLane = this.state.dragPreview?.targetLane || toLane
+    let insertBefore = this.state.dragPreview?.insertBefore || false
 
     console.log('[DragOperations.handleDrop] Dropping card:', {
       fromTime, fromLane, cardId,
@@ -244,21 +338,62 @@ export class DragOperations {
       dropEventTime: toTime, dropEventLane: toLane
     })
 
-    // Kanban-style move: shift cards within lanes
-    // Step 1: Remove card from source
-    const fromKey = this.strategy.cellKey(fromTime, fromLane)
-    const cardData = sheet.cells.get(fromKey)
+    // Handle drops on phantom columns - create new column first
+    if (targetLane.startsWith('phantom-col-')) {
+      const newColId = `c-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`
+      sheet.colOrder.push([newColId])
+      targetLane = newColId
+      console.log('[DragOperations.handleDrop] Created new column:', newColId)
 
-    if (!cardData) {
-      console.log('[DragOperations.handleDrop] Card not found at source')
-      this.state.isDragging = false
-      this.state.dragPreview = null
-      this.state.draggedCard = null
-      return
+      // Create frozen header card for the new lane
+      const timeline = this.getTimeline()
+      if (timeline.length > 0) {
+        const frozenTime = timeline[0]
+        const headerCardId = `card-${Date.now()}-header-${Math.random().toString(36).substring(2, 9)}`
+        const headerKey = this.strategy.cellKey(frozenTime, newColId)
+        sheet.cells.set(headerKey, { cardId: headerCardId })
+
+        // Create default header card metadata
+        const headerCard = {
+          cardId: headerCardId,
+          title: 'New Lane',
+          color: '#CCCCCC',
+          prompt: '',
+          createdAt: new Date().toISOString()
+        }
+
+        // Add to cardsMetadata
+        const cardMap = new Y.Map()
+        for (const [key, value] of Object.entries(headerCard)) {
+          cardMap.set(key, value)
+        }
+        sheet.cardsMetadata.set(headerCardId, cardMap)
+        console.log('[DragOperations.handleDrop] Created header card for new lane:', headerCardId)
+      }
     }
 
-    sheet.cells.delete(fromKey)
-    console.log('[DragOperations.handleDrop] Removed from:', fromKey)
+    // Handle drops on phantom rows - create new row first
+    if (targetTime.startsWith('phantom-row-')) {
+      const newRowId = `r-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 9)}`
+      sheet.rowOrder.push([newRowId])
+      targetTime = newRowId
+      console.log('[DragOperations.handleDrop] Created new row:', newRowId)
+    }
+
+    // Kanban-style move: shift cards within lanes
+    // Use Yjs transaction to batch all cell operations for better performance
+    sheet.doc.transact(() => {
+      // Step 1: Remove card from source
+      const fromKey = this.strategy.cellKey(fromTime, fromLane)
+      const cardData = sheet.cells.get(fromKey)
+
+      if (!cardData) {
+        console.log('[DragOperations.handleDrop] Card not found at source')
+        return
+      }
+
+      sheet.cells.delete(fromKey)
+      console.log('[DragOperations.handleDrop] Removed from:', fromKey)
 
     // Step 2: Get all time points and find positions
     const allTimes = this.getTimeline()
@@ -304,23 +439,60 @@ export class DragOperations {
       }
     }
 
-    // Step 5: Place card at target
-    const finalKey = this.strategy.cellKey(allTimes[insertAtIndex], targetLane)
-    sheet.cells.set(finalKey, cardData)
-    console.log('[DragOperations.handleDrop] Placed at:', finalKey)
+      // Step 5: Place card at target position temporarily
+      const tempKey = this.strategy.cellKey(allTimes[insertAtIndex], targetLane)
+      sheet.cells.set(tempKey, cardData)
+      console.log('[DragOperations.handleDrop] Placed at:', tempKey)
 
-    // Save to undo stack (still using row/col for backward compatibility with undo logic)
-    const { timeId: finalTime, laneId: finalLane } = this.strategy.parseCellKey(finalKey)
-    this.callbacks.onRecordUndo({
-      type: 'move',
-      userId: this.userId,
-      cardId: cardId,
-      fromRow: this.strategy.name === 'vertical' ? fromTime : fromLane,
-      fromCol: this.strategy.name === 'vertical' ? fromLane : fromTime,
-      toRow: this.strategy.name === 'vertical' ? finalTime : finalLane,
-      toCol: this.strategy.name === 'vertical' ? finalLane : finalTime
-    })
-    this.callbacks.onClearRedo()
+      // Step 6: Compact the target lane (remove gaps, solitaire-style)
+      // Preserve frozen header card (position 0) and collect only non-frozen cards
+      const frozenHeaderKey = this.strategy.cellKey(allTimes[0], targetLane)
+      const frozenHeaderCard = sheet.cells.get(frozenHeaderKey)
+
+      // Collect all cards in the target lane EXCEPT the frozen header (start from position 1)
+      const cardsInLane: Array<{ card: any; originalIndex: number }> = []
+      for (let i = 1; i < allTimes.length; i++) {
+        const key = this.strategy.cellKey(allTimes[i], targetLane)
+        const card = sheet.cells.get(key)
+        if (card) {
+          cardsInLane.push({ card, originalIndex: i })
+        }
+      }
+
+      // Clear all cards from the lane EXCEPT the frozen header
+      for (let i = 1; i < allTimes.length; i++) {
+        const key = this.strategy.cellKey(allTimes[i], targetLane)
+        sheet.cells.delete(key)
+      }
+
+      // Place cards back compacted starting from position 1 (after frozen header)
+      const startIndex = 1 // Skip frozen header row at position 0
+      let finalKey = tempKey
+      for (let i = 0; i < cardsInLane.length; i++) {
+        const compactKey = this.strategy.cellKey(allTimes[startIndex + i], targetLane)
+        sheet.cells.set(compactKey, cardsInLane[i].card)
+
+        // Track where our dragged card ended up
+        if (cardsInLane[i].card.cardId === cardId) {
+          finalKey = compactKey
+        }
+      }
+
+      console.log('[DragOperations.handleDrop] Compacted lane:', targetLane, 'cards:', cardsInLane.length)
+
+      // Save to undo stack (still using row/col for backward compatibility with undo logic)
+      const { timeId: finalTime, laneId: finalLane } = this.strategy.parseCellKey(finalKey)
+      this.callbacks.onRecordUndo({
+        type: 'move',
+        userId: this.userId,
+        cardId: cardId,
+        fromRow: this.strategy.name === 'vertical' ? fromTime : fromLane,
+        fromCol: this.strategy.name === 'vertical' ? fromLane : fromTime,
+        toRow: this.strategy.name === 'vertical' ? finalTime : finalLane,
+        toCol: this.strategy.name === 'vertical' ? finalLane : finalTime
+      })
+      this.callbacks.onClearRedo()
+    }) // End of Yjs transaction - all cell ops batched into one sync
 
     // Clear drag state
     this.state.isDragging = false

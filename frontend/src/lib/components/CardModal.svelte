@@ -3,6 +3,7 @@
   import * as Y from 'yjs'
   import VideoMedia from '../VideoMedia.svelte'
   import type { SheetConnection } from '../ySheet'
+  import { setCardField, setCard } from '../ySheet'
 
   // Props interface
   interface Props {
@@ -344,14 +345,11 @@
     }
   }
 
-  // Handle modal title input with real-time sync
+  // Handle modal title input with real-time sync (granular update)
   function handleModalTitleInput(value: string) {
     title = value
     if (sheet && cardId) {
-      const cardMetadata = sheet.cardsMetadata.get(cardId)
-      if (cardMetadata) {
-        sheet.cardsMetadata.set(cardId, { ...cardMetadata, title: value })
-      }
+      setCardField(sheet, cardId, 'title', value)
     }
   }
 
@@ -379,13 +377,9 @@
         attachments = [...attachments, attachment]
         onUpdateAttachments(attachments)
 
-        // Sync to Yjs
+        // Sync to Yjs (granular update)
         if (sheet) {
-          const cardMeta = sheet.cardsMetadata.get(cardId)
-          if (cardMeta) {
-            const updatedAttachments = [...(cardMeta.attachments || []), attachment]
-            sheet.cardsMetadata.set(cardId, { ...cardMeta, attachments: updatedAttachments })
-          }
+          setCardField(sheet, cardId, 'attachments', [...attachments, attachment])
         }
       } else {
         console.error('Failed to upload attachment:', await response.text())
@@ -412,13 +406,9 @@
         attachments = attachments.filter(a => a.id !== attachmentId)
         onUpdateAttachments(attachments)
 
-        // Sync to Yjs
+        // Sync to Yjs (granular update)
         if (sheet) {
-          const cardMeta = sheet.cardsMetadata.get(cardId)
-          if (cardMeta) {
-            const updatedAttachments = (cardMeta.attachments || []).filter((a: any) => a.id !== attachmentId)
-            sheet.cardsMetadata.set(cardId, { ...cardMeta, attachments: updatedAttachments })
-          }
+          setCardField(sheet, cardId, 'attachments', attachments.filter(a => a.id !== attachmentId))
         }
       } else {
         console.error('Failed to delete attachment:', await response.text())
@@ -480,7 +470,7 @@
         // Update Yjs so it syncs to all clients
         const updatedCard = await response.json()
         if (sheet) {
-          sheet.cardsMetadata.set(cardId, updatedCard)
+          setCard(sheet, cardId, updatedCard)
         }
         console.log('[saveModal] Card updated successfully')
       } else {
@@ -783,6 +773,7 @@
     outline: none;
     text-align: left;
     letter-spacing: -0.01em;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 
   .modal-card-title::placeholder {
@@ -939,6 +930,7 @@
     font-size: 0.875rem;
     font-weight: 500;
     color: rgba(255, 255, 255, 0.7);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 
   .prompt-header {
@@ -1019,8 +1011,8 @@
 
   .modal-color-text {
     flex: 1;
-    font-family: 'Monaco', 'Menlo', monospace;
     text-transform: uppercase;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 
   .modal-textarea {
@@ -1031,7 +1023,7 @@
     border-radius: 8px;
     color: rgba(255, 255, 255, 0.95);
     font-size: 0.875rem;
-    font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
     line-height: 1.5;
     resize: vertical;
     outline: none;
@@ -1143,6 +1135,7 @@
     cursor: pointer;
     transition: all 0.2s;
     border: none;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   }
 
   .modal-btn-cancel {
