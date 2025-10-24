@@ -357,8 +357,8 @@
               <input
                 type="text"
                 class="shot-title-input horizontal-title"
-                value={laneId.startsWith('phantom-') ? '' : (shotTitles.get(laneId) || `Lane ${laneId.replace('c-', '')}`)}
-                placeholder={laneId.startsWith('phantom-') ? 'New lane' : 'Lane title'}
+                value={laneId.startsWith('phantom-') ? '' : (shotTitles.get(laneId) || `Shot ${laneId.replace('c-', '')}`)}
+                placeholder={laneId.startsWith('phantom-') ? 'New shot' : 'Shot title'}
                 onchange={(e) => onShotTitleChange(laneId, e.currentTarget.value)}
                 disabled={laneId.startsWith('phantom-')}
               />
