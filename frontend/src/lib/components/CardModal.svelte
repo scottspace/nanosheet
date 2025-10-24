@@ -365,40 +365,18 @@
   // Handle attachment upload
   async function handleAttachmentUpload(e: Event) {
     const target = e.target as HTMLInputElement
-    const file = target.files?.[0]
-    if (!file || !cardId) return
 
-    try {
-      // Create FormData for upload
-      const formData = new FormData()
-      formData.append('file', file)
-      formData.append('cardId', cardId)
-
-      // Upload to backend (which will store in GCS)
-      const response = await fetch(`${apiUrl}/api/attachments/upload`, {
-        method: 'POST',
-        body: formData
-      })
-
-      if (response.ok) {
-        const attachment = await response.json()
-        // Add to attachments list
-        attachments = [...attachments, attachment]
-        onUpdateAttachments(attachments)
-
-        // Sync to Yjs (granular update)
-        if (sheet) {
-          setCardField(sheet, cardId, 'attachments', [...attachments, attachment])
-        }
-      } else {
-        console.error('Failed to upload attachment:', await response.text())
-      }
-    } catch (error) {
-      console.error('Error uploading attachment:', error)
+    // Reset input and show "coming soon" toast
+    if (target) {
+      target.value = ''
     }
+    onShowToast('Attachments coming soon')
+    return
 
-    // Reset input
-    target.value = ''
+    // TODO: Implement attachment upload when backend endpoint is ready
+    // const file = target.files?.[0]
+    // if (!file || !cardId) return
+    // ... rest of upload logic
   }
 
   // Delete attachment
