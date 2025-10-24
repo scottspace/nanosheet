@@ -681,6 +681,11 @@
     state.savePreference('thumbnailSize', index)
   }}
   onToggleSound={() => {
+    state.videoId = 'dQw4w9WgXcQ'
+    state.showVideoModal = true
+  }}
+  onProfileClick={() => {
+    state.videoId = 'yaZ1hkAHI8A'
     state.showVideoModal = true
   }}
   onToggleStickyTopRow={() => {
@@ -796,6 +801,7 @@
 
 <VideoModal
   show={state.showVideoModal}
+  videoId={state.videoId}
   onClose={() => {
     state.showVideoModal = false
   }}

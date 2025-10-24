@@ -52,6 +52,8 @@
     onToggleEllipsisMenu: (id: string) => void
     /** Callback: Show toast notification */
     onShowToast: (message: string) => void
+    /** Callback: Profile click */
+    onProfileClick: () => void
 
     // LevelsBar props
     /** Project name */
@@ -90,6 +92,7 @@
     onToggleStickyTopRow,
     onToggleEllipsisMenu,
     onShowToast,
+    onProfileClick,
     // LevelsBar
     projectName,
     levels,
@@ -121,6 +124,7 @@
     {onToggleStickyTopRow}
     {onToggleEllipsisMenu}
     {onShowToast}
+    {onProfileClick}
   />
 
   <!-- Breadcrumb Navigation (optional) -->

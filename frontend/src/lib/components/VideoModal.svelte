@@ -10,11 +10,13 @@
   interface Props {
     /** Show modal */
     show: boolean
+    /** YouTube video ID */
+    videoId: string
     /** Callback: Close modal */
     onClose: () => void
   }
 
-  let { show, onClose }: Props = $props()
+  let { show, videoId, onClose }: Props = $props()
 
   // Close on Escape key
   function handleKeydown(e: KeyboardEvent) {
@@ -33,7 +35,7 @@
       <iframe
         width="560"
         height="315"
-        src="https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1"
+        src="https://www.youtube.com/embed/{videoId}?autoplay=1"
         title="YouTube video player"
         frameborder="0"
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"

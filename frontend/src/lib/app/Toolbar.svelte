@@ -52,6 +52,8 @@
     onToggleEllipsisMenu: (id: string) => void
     /** Callback: Show toast notification */
     onShowToast: (message: string) => void
+    /** Callback: Profile click */
+    onProfileClick: () => void
   }
 
   let {
@@ -70,7 +72,8 @@
     onToggleSound,
     onToggleStickyTopRow,
     onToggleEllipsisMenu,
-    onShowToast
+    onShowToast,
+    onProfileClick
   }: Props = $props()
 </script>
 
@@ -183,7 +186,7 @@
     </button>
 
     <div class="profile-badge">
-      <div class="profile-info">
+      <div class="profile-info" onclick={onProfileClick}>
         <span class="plan-name">ULTRA</span>
         <div class="profile-pic">SP</div>
       </div>
