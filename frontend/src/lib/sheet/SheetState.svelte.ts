@@ -109,20 +109,19 @@ export class SheetState {
   // ============================================================================
   // DRAG STATE (CARDS)
   // ============================================================================
-  // NOTE: These are NOT $state() because they're mutated hundreds of times
-  // per second during drag operations. Using $state() causes massive performance
-  // overhead. The UI still updates because components re-render on dragover events.
+  // NOTE: Made reactive ($state) to enable live animation during drag.
+  // Mouse position remains non-reactive for performance (updated hundreds of times/sec).
 
-  /** Currently dragged card */
-  draggedCard: DraggedCard | null = null
+  /** Currently dragged card - REACTIVE for live animations */
+  draggedCard = $state<DraggedCard | null>(null)
 
-  /** Drag preview (where card will drop) */
-  dragPreview: DragPreview | null = null
+  /** Drag preview (where card will drop) - REACTIVE for live animations */
+  dragPreview = $state<DragPreview | null>(null)
 
-  /** Is dragging active */
-  isDragging: boolean = false
+  /** Is dragging active - REACTIVE for live animations */
+  isDragging = $state(false)
 
-  /** Mouse position during drag */
+  /** Mouse position during drag (non-reactive for performance) */
   dragMousePos: { x: number; y: number } = { x: 0, y: 0 }
 
   // ============================================================================
@@ -150,11 +149,17 @@ export class SheetState {
   // SCROLL REFS
   // ============================================================================
 
-  /** Frozen row element ref */
+  /** Frozen row element ref (vertical mode) */
   frozenRowRef = $state<HTMLDivElement | null>(null)
 
-  /** Columns container element ref */
+  /** Columns container element ref (vertical mode) */
   columnsContainerRef = $state<HTMLDivElement | null>(null)
+
+  /** Frozen column element ref (horizontal mode) */
+  frozenColumnRef = $state<HTMLDivElement | null>(null)
+
+  /** Rows container element ref (horizontal mode) */
+  rowsContainerRef = $state<HTMLDivElement | null>(null)
 
   // ============================================================================
   // MODAL STATE

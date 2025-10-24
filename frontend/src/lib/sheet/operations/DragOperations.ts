@@ -132,6 +132,17 @@ export class DragOperations {
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = 'move'
       event.dataTransfer.setData('text/plain', cardId)
+
+      // Center the drag image on the cursor for better visual feedback
+      // Get the element being dragged
+      const target = event.target as HTMLElement
+      if (target) {
+        const rect = target.getBoundingClientRect()
+        // Set drag image offset to center of the card
+        const offsetX = rect.width / 2
+        const offsetY = rect.height / 2
+        event.dataTransfer.setDragImage(target, offsetX, offsetY)
+      }
     }
     console.log('[DragOperations.handleDragStart] Started dragging:', cardId)
   }
@@ -163,11 +174,10 @@ export class DragOperations {
 
     const timeline = this.getTimeline()
 
-    // Calculate insert position first
+    // Calculate insert position using orientation-aware logic
     const rect = cardElement.getBoundingClientRect()
-    const mouseY = event.clientY
-    const cardMidpoint = rect.top + (rect.height / 2)
-    const insertBefore = mouseY < cardMidpoint
+    const mousePos = { x: event.clientX, y: event.clientY }
+    const insertBefore = this.state.orientation.calculateInsertBefore(rect, mousePos)
 
     // Skip frozen time position as drop target ONLY if trying to insert before it
     // Allow inserting after the frozen row (which puts card in position 1)
@@ -327,15 +337,29 @@ export class DragOperations {
 
     const { timeId: fromTime, laneId: fromLane, cardId } = this.state.draggedCard
 
-    // Use dragPreview if available, otherwise use drop event target (for blank cells)
-    let targetTime = this.state.dragPreview?.targetTime || toTime
-    let targetLane = this.state.dragPreview?.targetLane || toLane
-    let insertBefore = this.state.dragPreview?.insertBefore || false
+    // ALWAYS use dragPreview position - this is where the placeholder showed
+    // Only fall back to drop event target if dragPreview doesn't exist (shouldn't happen)
+    if (!this.state.dragPreview) {
+      console.warn('[DragOperations.handleDrop] No dragPreview! Using drop event target')
+      this.state.isDragging = false
+      this.state.draggedCard = null
+      return
+    }
 
-    console.log('[DragOperations.handleDrop] Dropping card:', {
-      fromTime, fromLane, cardId,
-      targetTime, targetLane, insertBefore,
-      dropEventTime: toTime, dropEventLane: toLane
+    let targetTime = this.state.dragPreview.targetTime
+    let targetLane = this.state.dragPreview.targetLane
+    const insertBefore = this.state.dragPreview.insertBefore
+
+    console.log('=== DROP POSITION ANALYSIS ===')
+    console.log('[PLACEHOLDER] Where placeholder was shown:', {
+      targetTime,
+      targetLane,
+      insertBefore: insertBefore ? 'BEFORE' : 'AFTER'
+    })
+    console.log('[SOURCE] Dragging from:', {
+      fromTime,
+      fromLane,
+      cardId
     })
 
     // Handle drops on phantom columns - create new column first
@@ -428,6 +452,15 @@ export class DragOperations {
     // Step 4: Shift cards in target lane backward in time from target position
     const insertAtIndex = insertBefore ? targetTimeIndex : targetTimeIndex + 1
 
+    console.log('[CALCULATION] Insert position:', {
+      targetTimeIndex,
+      insertBefore,
+      insertAtIndex,
+      timelineLength: allTimes.length,
+      targetTimeInTimeline: allTimes[targetTimeIndex],
+      insertTimeInTimeline: allTimes[insertAtIndex]
+    })
+
     // Shift cards backward starting from the end
     for (let i = allTimes.length - 1; i >= insertAtIndex; i--) {
       const currentKey = this.strategy.cellKey(allTimes[i], targetLane)
@@ -482,6 +515,14 @@ export class DragOperations {
 
       // Save to undo stack (still using row/col for backward compatibility with undo logic)
       const { timeId: finalTime, laneId: finalLane } = this.strategy.parseCellKey(finalKey)
+
+      console.log('[ACTUAL DROP] Card ended up at:', {
+        finalTime,
+        finalLane,
+        finalKey,
+        calculatedInsertIndex: insertBefore ? targetTimeIndex : targetTimeIndex + 1
+      })
+      console.log('=== END DROP ANALYSIS ===\n')
       this.callbacks.onRecordUndo({
         type: 'move',
         userId: this.userId,

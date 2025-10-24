@@ -466,6 +466,16 @@
     }
   }
 
+  function handleSyncRowsScroll(e: Event) {
+    const target = e.target as HTMLElement
+    if (state.rowsContainerRef && target !== state.rowsContainerRef) {
+      state.rowsContainerRef.scrollTop = target.scrollTop
+    }
+    if (state.frozenColumnRef && target !== state.frozenColumnRef) {
+      state.frozenColumnRef.scrollTop = target.scrollTop
+    }
+  }
+
   function handleShotTitleChange(colId: string, value: string) {
     if (state.sheet && !colId.startsWith('phantom-')) {
       state.sheet.shotTitles.set(colId, value)
@@ -710,7 +720,10 @@
       timeline={state.timeline}
       bind:frozenRowRef={state.frozenRowRef}
       bind:columnsContainerRef={state.columnsContainerRef}
+      bind:frozenColumnRef={state.frozenColumnRef}
+      bind:rowsContainerRef={state.rowsContainerRef}
       onSyncColumnsScroll={handleSyncColumnsScroll}
+      onSyncRowsScroll={handleSyncRowsScroll}
       onColumnDragStart={(e, colId) => columnDragOps.handleColumnDragStart(e, colId)}
       onColumnDragOver={(e, colId) => columnDragOps.handleColumnDragOver(e, colId)}
       onColumnDrop={(e, colId) => columnDragOps.handleColumnDrop(e, colId)}

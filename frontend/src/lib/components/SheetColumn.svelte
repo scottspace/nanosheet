@@ -47,6 +47,49 @@
   function cellKey(rowId: string, colId: string): string {
     return `${rowId}:${colId}`
   }
+
+  // Compute display order with drag preview - cards animate to make space during drag
+  $: computedDisplayRows = (() => {
+    // If not dragging or no preview, return normal display
+    if (!isDragging || !dragPreview || !draggedCard) {
+      return stickyTopRow ? displayRows.slice(1) : displayRows
+    }
+
+    // Only reorder if this is the target lane
+    if (dragPreview.targetLane !== colId) {
+      // If this is the SOURCE lane (where drag started), show compacted view (filling the hole)
+      if (draggedCard.laneId === colId) {
+        const baseRows = stickyTopRow ? displayRows.slice(1) : displayRows
+        // Filter out the dragged card's row to show the "hole filled"
+        return baseRows.filter(r => r !== draggedCard.timeId)
+      }
+      // Other lanes: normal display
+      return stickyTopRow ? displayRows.slice(1) : displayRows
+    }
+
+    // This IS the target lane - compute virtual order showing where cards will be
+    const baseRows = stickyTopRow ? displayRows.slice(1) : displayRows
+
+    // Find the index within baseRows (the displayed rows)
+    const targetIndexInDisplay = baseRows.indexOf(dragPreview.targetTime)
+    const insertAtIndex = dragPreview.insertBefore ? targetIndexInDisplay : targetIndexInDisplay + 1
+
+    // Skip animation if moving within ±1 in same lane (no-op move)
+    if (draggedCard.laneId === colId) {
+      const draggedIndexInDisplay = baseRows.indexOf(draggedCard.timeId)
+      if (Math.abs(insertAtIndex - draggedIndexInDisplay) <= 1) {
+        return baseRows // No reordering needed
+      }
+    }
+
+    // Create virtual row order: all rows with a "virtual-dragged" placeholder at insert position
+    const result = [...baseRows]
+    if (insertAtIndex >= 0 && insertAtIndex <= result.length) {
+      result.splice(insertAtIndex, 0, `virtual-${draggedCard.cardId}`)
+    }
+
+    return result
+  })()
 </script>
 
 <div class="column-wrapper">
@@ -66,93 +109,112 @@
     ondragover={(e) => onColumnDragOver(e, colId)}
     ondrop={(e) => onColumnDrop(e, colId)}
   >
-    <!-- Get all cards in this lane (skip first time if sticky) -->
-    {#each (stickyTopRow ? displayRows.slice(1) : displayRows) as rowId (rowId)}
+    <!-- Get all cards in this lane with computed order for drag animations -->
+    {#each computedDisplayRows as rowId (rowId)}
+      {@const isVirtual = rowId.startsWith('virtual-')}
       {@const key = cellKey(rowId, colId)}
       {@const cell = cellsMap.get(key)}
       {@const cardId = cell?.cardId}
       {@const card = cardId ? cardsMetadata.get(cardId) : null}
       {@const isFirstRow = rowId === rows[0]}
 
-      <!-- Show shot header if this is first row and sticky is disabled -->
-      {#if !stickyTopRow && isFirstRow && !colId.startsWith('phantom-')}
-        <div class="shot-header-title">
-          <input
-            type="text"
-            class="shot-title-input"
-            value={shotTitles.get(colId) || `Shot ${colId.replace('c-', '').replace('media', '1').replace('alt', '2').replace('notes', '3')}`}
-            placeholder="Shot title"
-            onchange={(e) => onShotTitleChange(colId, e.currentTarget.value)}
-          />
-          <div class="shot-header-menu">
-            <button class="icon-btn-header menu-btn" title="Column options" onclick={(e) => onToggleColumnMenu(colId, e)}>
-              <span class="material-symbols-outlined">more_vert</span>
-            </button>
-
-            {#if openColumnMenu === colId}
-              <div class="column-dropdown-menu" onclick={(e) => e.stopPropagation()}>
-                <button class="menu-item" onclick={() => { onDuplicateColumn(colId); onCloseColumnMenu(); }}>
-                  <span class="material-symbols-outlined">content_copy</span>
-                  <span>Duplicate</span>
-                </button>
-                <button class="menu-item" onclick={onCloseColumnMenu}>
-                  <span class="material-symbols-outlined">comment</span>
-                  <span>Comment</span>
-                </button>
-                <button class="menu-item" onclick={() => { onColumnDownload(colId); onCloseColumnMenu(); }}>
-                  <span class="material-symbols-outlined">file_download</span>
-                  <span>Download</span>
-                </button>
-                <button class="menu-item delete-item" onclick={() => { onDeleteColumn(colId); onCloseColumnMenu(); }}>
-                  <span class="material-symbols-outlined">delete</span>
-                  <span>Delete</span>
-                </button>
-              </div>
-            {/if}
-          </div>
-        </div>
-      {/if}
-
-      <!-- Use SheetCard component -->
-      <SheetCard
-        {card}
-        {rowId}
-        {colId}
-        {cardId}
-        {isFirstRow}
-        {stickyTopRow}
-        {thumbnailSize}
-        {isDragging}
-        {draggedCard}
-        {isColumnDragging}
-        {dragPreview}
-        showShotHeader={false}
-        shotTitle=""
-        onDragStart={(e, r, c, cId) => !stickyTopRow && isFirstRow ? onColumnDragStart(e, colId) : onDragStart(e, r, c, cId)}
-        onDragOver={(e, r, c, el) => {
-          if (isColumnDragging) {
+      <!-- Card wrapper - animate real cards but not virtual placeholder -->
+      <div
+        class="{isVirtual ? 'drag-placeholder-space' : 'card-animation-wrapper'}"
+        style="{isVirtual ? `width: ${thumbnailSize.width}px; height: ${thumbnailSize.height}px` : ''}"
+        animate:flip={{ duration: isVirtual ? 0 : 300 }}
+        ondragover={(e) => { if (isVirtual) e.preventDefault(); }}
+        ondrop={(e) => {
+          if (isVirtual) {
             e.preventDefault();
-            return;
+            e.stopPropagation();
+            // Drop on placeholder - use the dragPreview which is already set correctly
+            onDrop(e, rowId, colId);
           }
-          (!stickyTopRow && isFirstRow ? onColumnDragOver(e, colId) : onDragOver(e, r, c, el));
         }}
-        onDrop={(e, r, c) => {
-          if (isColumnDragging) return;
-          (!stickyTopRow && isFirstRow ? onColumnDrop(e, colId) : onDrop(e, r, c));
-        }}
-        onDragEnd={(e) => !stickyTopRow && isFirstRow ? onResetColumnDrag() : onDragEnd(e)}
-        onColumnDragStart={onColumnDragStart}
-        onColumnDragOver={onColumnDragOver}
-        onColumnDrop={onColumnDrop}
-        onResetColumnDrag={onResetColumnDrag}
-        onCardDoubleClick={onCardDoubleClick}
-        onDeleteCard={onDeleteCard}
-        onCardTitleInput={onCardTitleInput}
-        onCardTitleChange={onCardTitleChange}
-        onFileUpload={onFileUpload}
-        onShotTitleChange={onShotTitleChange}
-        onCardContextMenu={onCardContextMenu}
-      />
+      >
+        {#if !isVirtual}
+          <!-- Show shot header if this is first row and sticky is disabled -->
+          {#if !stickyTopRow && isFirstRow && !colId.startsWith('phantom-')}
+            <div class="shot-header-title">
+              <input
+                type="text"
+                class="shot-title-input"
+                value={shotTitles.get(colId) || `Shot ${colId.replace('c-', '').replace('media', '1').replace('alt', '2').replace('notes', '3')}`}
+                placeholder="Shot title"
+                onchange={(e) => onShotTitleChange(colId, e.currentTarget.value)}
+              />
+              <div class="shot-header-menu">
+                <button class="icon-btn-header menu-btn" title="Column options" onclick={(e) => onToggleColumnMenu(colId, e)}>
+                  <span class="material-symbols-outlined">more_vert</span>
+                </button>
+
+                {#if openColumnMenu === colId}
+                  <div class="column-dropdown-menu" onclick={(e) => e.stopPropagation()}>
+                    <button class="menu-item" onclick={() => { onDuplicateColumn(colId); onCloseColumnMenu(); }}>
+                      <span class="material-symbols-outlined">content_copy</span>
+                      <span>Duplicate</span>
+                    </button>
+                    <button class="menu-item" onclick={onCloseColumnMenu}>
+                      <span class="material-symbols-outlined">comment</span>
+                      <span>Comment</span>
+                    </button>
+                    <button class="menu-item" onclick={() => { onColumnDownload(colId); onCloseColumnMenu(); }}>
+                      <span class="material-symbols-outlined">file_download</span>
+                      <span>Download</span>
+                    </button>
+                    <button class="menu-item delete-item" onclick={() => { onDeleteColumn(colId); onCloseColumnMenu(); }}>
+                      <span class="material-symbols-outlined">delete</span>
+                      <span>Delete</span>
+                    </button>
+                  </div>
+                {/if}
+              </div>
+            </div>
+          {/if}
+
+          <!-- Use SheetCard component -->
+          <SheetCard
+            {card}
+            {rowId}
+            {colId}
+            {cardId}
+            {isFirstRow}
+            {stickyTopRow}
+            {thumbnailSize}
+            {isDragging}
+            {draggedCard}
+            {isColumnDragging}
+            {dragPreview}
+            showShotHeader={false}
+            shotTitle=""
+            onDragStart={(e, r, c, cId) => !stickyTopRow && isFirstRow ? onColumnDragStart(e, colId) : onDragStart(e, r, c, cId)}
+            onDragOver={(e, r, c, el) => {
+              if (isColumnDragging) {
+                e.preventDefault();
+                return;
+              }
+              (!stickyTopRow && isFirstRow ? onColumnDragOver(e, colId) : onDragOver(e, r, c, el));
+            }}
+            onDrop={(e, r, c) => {
+              if (isColumnDragging) return;
+              (!stickyTopRow && isFirstRow ? onColumnDrop(e, colId) : onDrop(e, r, c));
+            }}
+            onDragEnd={(e) => !stickyTopRow && isFirstRow ? onResetColumnDrag() : onDragEnd(e)}
+            onColumnDragStart={onColumnDragStart}
+            onColumnDragOver={onColumnDragOver}
+            onColumnDrop={onColumnDrop}
+            onResetColumnDrag={onResetColumnDrag}
+            onCardDoubleClick={onCardDoubleClick}
+            onDeleteCard={onDeleteCard}
+            onCardTitleInput={onCardTitleInput}
+            onCardTitleChange={onCardTitleChange}
+            onFileUpload={onFileUpload}
+            onShotTitleChange={onShotTitleChange}
+            onCardContextMenu={onCardContextMenu}
+          />
+        {/if}
+      </div>
     {/each}
   </div>
 
@@ -178,6 +240,18 @@
     transition: opacity 0.2s ease, transform 0.2s ease;
     flex-shrink: 0;
     box-sizing: border-box;
+  }
+
+  .card-animation-wrapper {
+    display: contents; /* Don't affect layout, just provide animation wrapper */
+  }
+
+  .drag-placeholder-space {
+    background: rgba(100, 150, 255, 0.08);
+    border: 2px dashed rgba(100, 150, 255, 0.4);
+    border-radius: 4px;
+    box-shadow: 0 0 12px rgba(100, 150, 255, 0.2);
+    flex-shrink: 0;
   }
 
   .column.column-dragging {

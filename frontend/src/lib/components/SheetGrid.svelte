@@ -26,9 +26,12 @@
   // Refs
   export let frozenRowRef: HTMLDivElement | null = null
   export let columnsContainerRef: HTMLDivElement | null = null
+  export let frozenColumnRef: HTMLDivElement | null = null
+  export let rowsContainerRef: HTMLDivElement | null = null
 
   // Event handlers
   export let onSyncColumnsScroll: (e: Event) => void
+  export let onSyncRowsScroll: (e: Event) => void
   export let onColumnDragStart: (e: DragEvent, colId: string) => void
   export let onColumnDragOver: (e: DragEvent, colId: string) => void
   export let onColumnDrop: (e: DragEvent, colId: string) => void
@@ -82,6 +85,60 @@
       columnsContainerRef.scrollTop += e.deltaY
     }
   }
+
+  // Compute display order with drag preview for horizontal mode
+  // Reactive derived value that recomputes when drag state changes
+  $: computedTimeOrderMap = (() => {
+    const map = new Map<string, string[]>()
+
+    // Pre-compute for all lanes
+    displayCols.forEach(laneId => {
+      const baseRows = stickyTopRow ? displayRows.slice(1) : displayRows
+
+      // If not dragging or no preview, return normal display
+      if (!isDragging || !dragPreview || !draggedCard) {
+        map.set(laneId, baseRows)
+        return
+      }
+
+      // Only reorder if this is the target lane
+      if (dragPreview.targetLane !== laneId) {
+        // If this is the SOURCE lane (where drag started), show compacted view (filling the hole)
+        if (draggedCard.laneId === laneId) {
+          // Filter out the dragged card's time to show the "hole filled"
+          map.set(laneId, baseRows.filter(t => t !== draggedCard.timeId))
+        } else {
+          // Other lanes: normal display
+          map.set(laneId, baseRows)
+        }
+        return
+      }
+
+      // This IS the target lane - compute virtual order showing where cards will be
+      // Find the index within baseRows (the displayed rows)
+      const targetIndexInDisplay = baseRows.indexOf(dragPreview.targetTime)
+      const insertAtIndex = dragPreview.insertBefore ? targetIndexInDisplay : targetIndexInDisplay + 1
+
+      // Skip animation if moving within ±1 in same lane (no-op move)
+      if (draggedCard.laneId === laneId) {
+        const draggedIndexInDisplay = baseRows.indexOf(draggedCard.timeId)
+        if (Math.abs(insertAtIndex - draggedIndexInDisplay) <= 1) {
+          map.set(laneId, baseRows) // No reordering needed
+          return
+        }
+      }
+
+      // Create virtual time order: all times with a "virtual-dragged" placeholder at insert position
+      const result = [...baseRows]
+      if (insertAtIndex >= 0 && insertAtIndex <= result.length) {
+        result.splice(insertAtIndex, 0, `virtual-${draggedCard.cardId}`)
+      }
+
+      map.set(laneId, result)
+    })
+
+    return map
+  })()
 </script>
 
 <div class="sheet-view">
@@ -281,7 +338,12 @@
   <div class="horizontal-container">
     <!-- Frozen column (left side) -->
     {#if stickyTopRow}
-      <div class="frozen-column" style="gap: {gap}px">
+      <div
+        bind:this={frozenColumnRef}
+        class="frozen-column"
+        style="gap: {gap}px"
+        onscroll={onSyncRowsScroll}
+      >
         {#each displayCols as laneId (laneId)}
           {@const timeId = displayRows[0]}
           {@const key = cellKey(timeId, laneId)}
@@ -289,7 +351,7 @@
           {@const cardId = cell?.cardId}
           {@const card = cardId ? cardsMetadata.get(cardId) : null}
 
-          <div class="lane-header-row" style="gap: {gap}px">
+          <div class="lane-header-row" style="gap: {gap}px; height: {thumbnailSize.height}px;">
             <!-- Lane title -->
             <div class="lane-title" style="width: {thumbnailSize.width * 0.6}px">
               <input
@@ -355,19 +417,33 @@
             {:else}
               <!-- Empty first cell -->
               <div
-                class="empty-cell"
+                class="blank-cell"
                 style="width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
                 ondragover={(e) => onDragOver(e, timeId, laneId, e.currentTarget)}
                 ondrop={(e) => onDrop(e, timeId, laneId)}
               >
-                <label class="upload-label">
-                  <input
-                    type="file"
-                    accept="image/*,video/*"
-                    onchange={(e) => onFileUpload(e, timeId, laneId)}
-                  />
-                  <span class="material-symbols-outlined">add_photo_alternate</span>
-                </label>
+                <input
+                  type="file"
+                  id="upload-{timeId}-{laneId}"
+                  accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,video/mp4,video/quicktime,video/webm"
+                  multiple
+                  style="display: none"
+                  onchange={(e) => onFileUpload(e, timeId, laneId)}
+                />
+                <button
+                  class="cell-action-btn upload-btn"
+                  title="Upload media"
+                  onclick={() => document.getElementById(`upload-${timeId}-${laneId}`)?.click()}
+                >
+                  <span class="material-symbols-outlined">upload</span>
+                </button>
+                <button
+                  class="cell-action-btn generate-btn"
+                  title="Generate (coming soon)"
+                  disabled
+                >
+                  <span class="material-symbols-outlined">add</span>
+                </button>
               </div>
             {/if}
           </div>
@@ -376,82 +452,120 @@
     {/if}
 
     <!-- Scrollable rows (right side) -->
-    <div class="rows-container" style="gap: {gap}px">
+    <div
+      bind:this={rowsContainerRef}
+      class="rows-container"
+      style="gap: {gap}px"
+      onscroll={onSyncRowsScroll}
+    >
       {#each displayCols as laneId (laneId)}
-        <div class="horizontal-row" style="gap: {gap}px">
-          {#each displayRows.slice(stickyTopRow ? 1 : 0) as timeId (timeId)}
+        <div class="horizontal-row" style="gap: {gap}px; height: {thumbnailSize.height}px;">
+          {#each (computedTimeOrderMap.get(laneId) || []) as timeId (timeId)}
+            {@const isVirtual = timeId.startsWith('virtual-')}
             {@const key = cellKey(timeId, laneId)}
             {@const cell = cellsMap.get(key)}
             {@const cardId = cell?.cardId}
             {@const card = cardId ? cardsMetadata.get(cardId) : null}
 
-            {#if card}
-              <div
-                class="shot-card"
-                style="background-color: {card.thumb_url ? 'rgba(0, 0, 0, 0.3)' : card.color}; width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
-                draggable="true"
-                ondragstart={(e) => onDragStart(e, timeId, laneId, cardId)}
-                ondragover={(e) => onDragOver(e, timeId, laneId, e.currentTarget)}
-                ondrop={(e) => onDrop(e, timeId, laneId)}
-                ondragend={onDragEnd}
-                ondblclick={() => onCardDoubleClick(cardId)}
-                oncontextmenu={(e) => onCardContextMenu(e, cardId)}
-              >
-                {#if card.isLoading}
-                  <div class="upload-loading">
-                    <div class="loading-spinner"></div>
+            <!-- Card wrapper - animate real cards but not virtual placeholder -->
+            <div
+              class="{isVirtual ? 'drag-placeholder-space-horizontal' : 'card-animation-wrapper-horizontal'}"
+              style="{isVirtual ? `width: ${thumbnailSize.width}px; height: ${thumbnailSize.height}px` : ''}"
+              animate:flip={{ duration: isVirtual ? 0 : 300 }}
+              ondragover={(e) => { if (isVirtual) e.preventDefault(); }}
+              ondrop={(e) => {
+                if (isVirtual) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  // Drop on placeholder - use the dragPreview which is already set correctly
+                  onDrop(e, timeId, laneId);
+                }
+              }}
+            >
+              {#if !isVirtual}
+                {#if card}
+                  <div
+                    class="shot-card"
+                    style="background-color: {card.thumb_url ? 'rgba(0, 0, 0, 0.3)' : card.color}; width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
+                    draggable="true"
+                    ondragstart={(e) => onDragStart(e, timeId, laneId, cardId)}
+                    ondragover={(e) => onDragOver(e, timeId, laneId, e.currentTarget)}
+                    ondrop={(e) => onDrop(e, timeId, laneId)}
+                    ondragend={onDragEnd}
+                    ondblclick={() => onCardDoubleClick(cardId)}
+                    oncontextmenu={(e) => onCardContextMenu(e, cardId)}
+                  >
+                    {#if card.isLoading}
+                      <div class="upload-loading">
+                        <div class="loading-spinner"></div>
+                      </div>
+                    {:else if card.media_type === 'video' && card.media_url && card.thumb_url}
+                      <div ondragstart={(e) => e.preventDefault()}>
+                        <VideoMedia src={card.media_url} thumbnail={card.thumb_url} />
+                      </div>
+                    {:else if card.thumb_url}
+                      <img
+                        src={card.thumb_url}
+                        alt={card.title}
+                        class="card-thumbnail"
+                        loading="lazy"
+                        decoding="async"
+                        ondragstart={(e) => e.preventDefault()}
+                      />
+                    {/if}
+                    {#if !card.thumb_url && !card.media_url && !card.isLoading}
+                      <div class="card-title-container">
+                        <input
+                          type="text"
+                          class="shot-title-input card-title-input"
+                          value={card.number ? `${card.title} ${card.number}` : card.title}
+                          oninput={(e) => onCardTitleInput(cardId, e.currentTarget.value)}
+                          onchange={(e) => onCardTitleChange(cardId, e.currentTarget.value)}
+                          onclick={(e) => e.stopPropagation()}
+                        />
+                      </div>
+                    {/if}
+                    <button
+                      class="btn-delete"
+                      onclick={(e) => handleDelete(e, timeId, laneId)}
+                    >
+                      ×
+                    </button>
                   </div>
-                {:else if card.media_type === 'video' && card.media_url && card.thumb_url}
-                  <div ondragstart={(e) => e.preventDefault()}>
-                    <VideoMedia src={card.media_url} thumbnail={card.thumb_url} />
-                  </div>
-                {:else if card.thumb_url}
-                  <img
-                    src={card.thumb_url}
-                    alt={card.title}
-                    class="card-thumbnail"
-                    loading="lazy"
-                    decoding="async"
-                    ondragstart={(e) => e.preventDefault()}
-                  />
-                {/if}
-                {#if !card.thumb_url && !card.media_url && !card.isLoading}
-                  <div class="card-title-container">
+                {:else}
+                  <!-- Empty cell -->
+                  <div
+                    class="blank-cell"
+                    style="width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
+                    ondragover={(e) => onDragOver(e, timeId, laneId, e.currentTarget)}
+                    ondrop={(e) => onDrop(e, timeId, laneId)}
+                  >
                     <input
-                      type="text"
-                      class="shot-title-input card-title-input"
-                      value={card.number ? `${card.title} ${card.number}` : card.title}
-                      oninput={(e) => onCardTitleInput(cardId, e.currentTarget.value)}
-                      onchange={(e) => onCardTitleChange(cardId, e.currentTarget.value)}
-                      onclick={(e) => e.stopPropagation()}
+                      type="file"
+                      id="upload-{timeId}-{laneId}"
+                      accept="image/png,image/jpeg,image/jpg,image/webp,image/gif,video/mp4,video/quicktime,video/webm"
+                      multiple
+                      style="display: none"
+                      onchange={(e) => onFileUpload(e, timeId, laneId)}
                     />
+                    <button
+                      class="cell-action-btn upload-btn"
+                      title="Upload media"
+                      onclick={() => document.getElementById(`upload-${timeId}-${laneId}`)?.click()}
+                    >
+                      <span class="material-symbols-outlined">upload</span>
+                    </button>
+                    <button
+                      class="cell-action-btn generate-btn"
+                      title="Generate (coming soon)"
+                      disabled
+                    >
+                      <span class="material-symbols-outlined">add</span>
+                    </button>
                   </div>
                 {/if}
-                <button
-                  class="btn-delete"
-                  onclick={(e) => handleDelete(e, timeId, laneId)}
-                >
-                  ×
-                </button>
-              </div>
-            {:else}
-              <!-- Empty cell -->
-              <div
-                class="empty-cell"
-                style="width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
-                ondragover={(e) => onDragOver(e, timeId, laneId, e.currentTarget)}
-                ondrop={(e) => onDrop(e, timeId, laneId)}
-              >
-                <label class="upload-label">
-                  <input
-                    type="file"
-                    accept="image/*,video/*"
-                    onchange={(e) => onFileUpload(e, timeId, laneId)}
-                  />
-                  <span class="material-symbols-outlined">add_photo_alternate</span>
-                </label>
-              </div>
-            {/if}
+              {/if}
+            </div>
           {/each}
         </div>
       {/each}
@@ -845,6 +959,7 @@
     flex-direction: row; /* title + card go horizontally */
     align-items: center;
     flex-shrink: 0;
+    min-height: fit-content;
   }
 
   .lane-title {
@@ -857,6 +972,19 @@
   .horizontal-title {
     font-size: clamp(0.7rem, 1.2vw, 0.95rem);
     text-align: left;
+  }
+
+  /* Animation wrappers for horizontal mode */
+  .card-animation-wrapper-horizontal {
+    display: contents; /* Don't affect layout, just provide animation wrapper */
+  }
+
+  .drag-placeholder-space-horizontal {
+    background: rgba(100, 150, 255, 0.08);
+    border: 2px dashed rgba(100, 150, 255, 0.4);
+    border-radius: 4px;
+    box-shadow: 0 0 12px rgba(100, 150, 255, 0.2);
+    flex-shrink: 0;
   }
 
   /* Rows container */
@@ -878,43 +1006,57 @@
     min-height: fit-content;
   }
 
-  /* Empty cell styling */
-  .empty-cell {
+  /* Blank cell styling (empty cells with upload buttons) */
+  .blank-cell {
     position: relative;
     border: 1px dashed rgba(255, 255, 255, 0.2);
     border-radius: 0;
     display: flex;
     align-items: center;
     justify-content: center;
+    gap: 0.5rem;
     transition: all 0.2s ease;
     flex-shrink: 0;
+    box-sizing: border-box;
   }
 
-  .empty-cell:hover {
+  .blank-cell:hover {
     border-color: rgba(255, 255, 255, 0.4);
     background: rgba(255, 255, 255, 0.05);
   }
 
-  .upload-label {
+  .cell-action-btn {
+    width: 48px;
+    height: 48px;
+    background: transparent;
+    border: none;
+    color: rgba(255, 255, 255, 0.5);
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 100%;
-    height: 100%;
     cursor: pointer;
-    color: rgba(255, 255, 255, 0.4);
-    transition: color 0.2s ease;
+    transition: color 0.2s ease, transform 0.2s ease;
+    opacity: 0;
   }
 
-  .upload-label:hover {
-    color: rgba(255, 255, 255, 0.7);
+  .blank-cell:hover .cell-action-btn {
+    opacity: 1;
   }
 
-  .upload-label input[type="file"] {
-    display: none;
+  .cell-action-btn:hover:not(:disabled) {
+    color: rgba(255, 255, 255, 0.9);
+    transform: scale(1.15);
   }
 
-  .upload-label .material-symbols-outlined {
-    font-size: 2rem;
+  .cell-action-btn:disabled {
+    cursor: not-allowed;
+  }
+
+  .blank-cell:hover .cell-action-btn:disabled {
+    opacity: 0.3;
+  }
+
+  .cell-action-btn .material-symbols-outlined {
+    font-size: 28px;
   }
 </style>

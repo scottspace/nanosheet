@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 
 import cards_api
 from cards_api import router as cards_router, init_clients
-from gcs_snapshots import load_snapshot, save_snapshot
+from gcs_snapshots import load_snapshot, save_snapshot, delete_all_snapshots
 
 # Load environment variables from parent directory's .env file
 env_path = Path(__file__).parent.parent / ".env"
@@ -77,31 +77,43 @@ class NanosheetRoom(YRoom):
         # Load snapshot from GCS BEFORE starting (so it's available when clients connect)
         if GCS_BUCKET:
             logger.info(f"Loading snapshot for room: {self.room_name}")
-            load_snapshot(GCS_BUCKET, self.room_name, self.ydoc)
+            try:
+                success = load_snapshot(GCS_BUCKET, self.room_name, self.ydoc)
+                if success:
+                    logger.info(f"Successfully loaded snapshot for room: {self.room_name}")
+                else:
+                    logger.info(f"No snapshot found or snapshot was corrupted for room: {self.room_name}")
+            except Exception as e:
+                logger.error(f"Failed to load snapshot for room {self.room_name}: {e}")
+                logger.info(f"Starting with empty document for room: {self.room_name}")
         else:
             logger.warning("GCS_BUCKET not configured, snapshots disabled")
 
         # Set up observers on specific Y structures (not all transactions)
         # This avoids triggering on awareness updates
         if GCS_BUCKET:
-            def on_change(event):
-                """Called when rowOrder, colOrder, cells, or cardsMetadata change."""
-                logger.info(f"YDoc structure changed in room: {self.room_name}")
-                asyncio.create_task(debounced_save_snapshot(self.room_name, self.ydoc))
+            try:
+                def on_change(event):
+                    """Called when rowOrder, colOrder, cells, or cardsMetadata change."""
+                    logger.info(f"YDoc structure changed in room: {self.room_name}")
+                    asyncio.create_task(debounced_save_snapshot(self.room_name, self.ydoc))
 
-            # Get the Y structures and observe them
-            row_order = self.ydoc.get_array('rowOrder')
-            col_order = self.ydoc.get_array('colOrder')
-            cells = self.ydoc.get_map('cells')
-            cards_metadata = self.ydoc.get_map('cardsMetadata')
+                # Get the Y structures and observe them
+                row_order = self.ydoc.get_array('rowOrder')
+                col_order = self.ydoc.get_array('colOrder')
+                cells = self.ydoc.get_map('cells')
+                cards_metadata = self.ydoc.get_map('cardsMetadata')
 
-            # Observe each structure
-            row_order.observe(on_change)
-            col_order.observe(on_change)
-            cells.observe(on_change)
-            cards_metadata.observe(on_change)
+                # Observe each structure
+                row_order.observe(on_change)
+                col_order.observe(on_change)
+                cells.observe(on_change)
+                cards_metadata.observe(on_change)
 
-            logger.info(f"Set up observers on rowOrder, colOrder, cells, cardsMetadata for room: {self.room_name}")
+                logger.info(f"Set up observers for room: {self.room_name}")
+            except Exception as e:
+                logger.error(f"Failed to set up observers for room {self.room_name}: {e}")
+                logger.info(f"Continuing without observers - snapshots will not be saved")
 
         # Now start the room
         await super().start(**kwargs)

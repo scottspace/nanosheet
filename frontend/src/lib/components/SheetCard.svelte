@@ -38,45 +38,10 @@
   $: isCardDragging = isDragging && draggedCard?.cardId === cardId
   $: isColumnDragHandle = !stickyTopRow && isFirstRow
 
-  // Check if we should show placeholder - hide if hovering over adjacent card in same lane
-  let shouldShowPlaceholderBefore: boolean
-  let shouldShowPlaceholderAfter: boolean
-
-  $: {
-    // Helper to check if we're in the same lane and within ±1 position
-    const isAdjacentInSameLane = () => {
-      if (!draggedCard || !dragPreview) return false
-
-      // Only apply adjacency logic if dragging within the same lane
-      if (draggedCard.laneId !== dragPreview.targetLane) return false
-      if (draggedCard.laneId !== colId) return false
-
-      // Get all time IDs in this lane (rows)
-      const timelineIds = rows
-      const draggedIndex = timelineIds.indexOf(draggedCard.timeId)
-      const targetIndex = timelineIds.indexOf(dragPreview.targetTime)
-
-      if (draggedIndex === -1 || targetIndex === -1) return false
-
-      // Check if target is within ±1 of dragged position
-      const distance = Math.abs(targetIndex - draggedIndex)
-      return distance <= 1
-    }
-
-    shouldShowPlaceholderBefore = dragPreview &&
-      dragPreview.targetTime === rowId &&
-      dragPreview.targetLane === colId &&
-      dragPreview.insertBefore &&
-      !isColumnDragging &&
-      !isAdjacentInSameLane()
-
-    shouldShowPlaceholderAfter = dragPreview &&
-      dragPreview.targetTime === rowId &&
-      dragPreview.targetLane === colId &&
-      !dragPreview.insertBefore &&
-      !isColumnDragging &&
-      !isAdjacentInSameLane()
-  }
+  // Old placeholder logic - now disabled since we use animated placeholders in computed display order
+  // Keeping the variables for backwards compatibility but always false
+  let shouldShowPlaceholderBefore: boolean = false
+  let shouldShowPlaceholderAfter: boolean = false
 
   // Prevent accidental double-clicks after delete
   let ignoreDoubleClick = false
@@ -138,6 +103,7 @@
     style="width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
     ondrop={(e) => {
       if (isColumnDragging) return;
+      e.stopPropagation();
       onDrop(e, rowId, colId);
     }}
     ondragover={(e) => e.preventDefault()}
@@ -164,6 +130,8 @@
       if (isColumnDragging) {
         return;
       }
+      // Stop propagation to prevent column drop handler from also firing
+      e.stopPropagation();
       (isColumnDragHandle ? onColumnDrop(e, colId) : onDrop(e, rowId, colId));
     }}
     ondragend={(e) => isColumnDragHandle ? onResetColumnDrag() : onDragEnd(e)}
@@ -262,6 +230,7 @@
     style="width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
     ondrop={(e) => {
       if (isColumnDragging) return;
+      e.stopPropagation();
       onDrop(e, rowId, colId);
     }}
     ondragover={(e) => e.preventDefault()}

@@ -134,7 +134,9 @@ export class ColumnDragOperations {
       dragPreview.style.display = 'flex'
       dragPreview.style.flexDirection = 'column'
       const thumbnailSize = this.getThumbnailSize()
-      dragPreview.style.gap = `${thumbnailSize.width * 0.035}px`
+      // Use smallest thumbnail size for drag preview (80px width)
+      const dragThumbSize = { width: 80, height: 80 * (thumbnailSize.height / thumbnailSize.width) }
+      dragPreview.style.gap = `${dragThumbSize.width * 0.035}px`
       dragPreview.style.opacity = '0.7'
       dragPreview.style.pointerEvents = 'none'
 
@@ -152,35 +154,61 @@ export class ColumnDragOperations {
         return cardId ? cardsMetadata.get(cardId) : null
       }).filter(card => card !== null)
 
-      // Add card previews to the drag image
-      laneCards.forEach(card => {
+      // Add card previews to the drag image (limit to first 3 cards)
+      const maxVisibleCards = 3
+      const cardsToShow = laneCards.slice(0, maxVisibleCards)
+      const hasMoreCards = laneCards.length > maxVisibleCards
+
+      cardsToShow.forEach(card => {
         const cardDiv = document.createElement('div')
-        cardDiv.style.width = `${thumbnailSize.width}px`
-        cardDiv.style.height = `${thumbnailSize.height}px`
+        cardDiv.style.width = `${dragThumbSize.width}px`
+        cardDiv.style.height = `${dragThumbSize.height}px`
         cardDiv.style.backgroundColor = card.color
-        cardDiv.style.borderRadius = '8px'
+        cardDiv.style.borderRadius = '0'
         cardDiv.style.display = 'flex'
         cardDiv.style.alignItems = 'center'
         cardDiv.style.justifyContent = 'center'
         cardDiv.style.color = 'rgba(255, 255, 255, 0.9)'
-        cardDiv.style.fontSize = '0.75rem'
-        cardDiv.style.padding = '0.5rem'
+        cardDiv.style.fontSize = '0.65rem'
+        cardDiv.style.fontWeight = '400'
+        cardDiv.style.fontFamily = 'system-ui, -apple-system, sans-serif'
+        cardDiv.style.padding = '0.35rem'
         cardDiv.style.textAlign = 'center'
-        cardDiv.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.2)'
+        cardDiv.style.boxShadow = '0 2px 8px rgba(0, 0, 0, 0.4)'
+        cardDiv.style.overflow = 'hidden'
+        cardDiv.style.textOverflow = 'ellipsis'
+        cardDiv.style.whiteSpace = 'nowrap'
         cardDiv.textContent = card.title
         dragPreview.appendChild(cardDiv)
       })
 
+      // Add ellipsis if there are more cards
+      if (hasMoreCards) {
+        const ellipsisDiv = document.createElement('div')
+        ellipsisDiv.style.width = `${dragThumbSize.width}px`
+        ellipsisDiv.style.height = `${dragThumbSize.height * 0.5}px`
+        ellipsisDiv.style.display = 'flex'
+        ellipsisDiv.style.alignItems = 'center'
+        ellipsisDiv.style.justifyContent = 'center'
+        ellipsisDiv.style.color = 'rgba(255, 255, 255, 0.6)'
+        ellipsisDiv.style.fontSize = '1.2rem'
+        ellipsisDiv.style.fontWeight = 'bold'
+        ellipsisDiv.textContent = '...'
+        dragPreview.appendChild(ellipsisDiv)
+      }
+
       document.body.appendChild(dragPreview)
 
       // Calculate total height of the column preview
-      const cardHeight = thumbnailSize.height
-      const gap = thumbnailSize.width * 0.035
-      const totalHeight = laneCards.length * cardHeight + (laneCards.length - 1) * gap
+      const cardHeight = dragThumbSize.height
+      const gap = dragThumbSize.width * 0.035
+      const ellipsisHeight = hasMoreCards ? dragThumbSize.height * 0.5 : 0
+      const visibleElementsCount = cardsToShow.length + (hasMoreCards ? 1 : 0)
+      const totalHeight = cardsToShow.length * cardHeight + ellipsisHeight + (visibleElementsCount - 1) * gap
 
       // Position cursor at center of column (horizontally and vertically)
       // This ensures dragover events fire when any part of the column overlaps a drop zone
-      const xOffset = thumbnailSize.width / 2
+      const xOffset = dragThumbSize.width / 2
       const yOffset = totalHeight / 2
 
       e.dataTransfer.setDragImage(dragPreview, xOffset, yOffset)
