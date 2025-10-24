@@ -1,386 +1,436 @@
 # Work Order: Nanosheet Transpose Feature
 
 ## Overview
-Generalize nanosheet to support both **column-major (vertical)** and **row-major (horizontal)** orientations using a time/lanes abstraction.
+Generalize nanosheet to support both **column-major (vertical)** and **row-major (horizontal)** orientations as pure view transformations of the same canonical data.
 
 ## Status
 - ✅ **Phase 1 Complete**: Time/lanes abstraction implemented and deployed
-- ✅ **Phase 2 Complete**: Modularization with Strategy Pattern architecture (including BOTH strategies!)
-- ⏳ **Phase 3 Ready**: Wire up horizontal orientation UI (strategies already implemented)
+- ✅ **Phase 2 Complete**: Modularization with Strategy Pattern architecture
+- ⏳ **Phase 3 In Progress**: Add horizontal orientation rendering (view transform only)
 
 ## Current Architecture (After Phase 2)
-- **Model**: `ySheet.ts` with `rowOrder`, `colOrder`, `cells` (sparse matrix) - **unchanged**
-- **View**: Modular component architecture with SheetGrid, SheetColumn, SheetCard
-- **State**: Centralized in `SheetState.svelte.ts` with proper `$state()` runes
-- **Operations**: Extracted into CardOperations, DragOperations, UndoRedoOperations, ColumnOperations classes
-- **Strategies**: OrientationStrategy interface with BOTH VerticalOrientation AND HorizontalOrientation fully implemented ✅
-- **Orientation**: Vertical only (HorizontalOrientation exists and is complete but not wired to UI)
-- **Deployment**: https://nanosheet.fly.dev
-
-## Target Architecture
-- **Model**: Unchanged (symmetric, orientation-agnostic) ✅
-- **View**: Modular components with time/lanes abstraction ✅
-- **Strategies**: Fully implemented for both orientations ✅
-- **Orientation**: Toggle between vertical/horizontal ⏳ (UI wiring needed)
-- **User Control**: Toggle button in toolbar + localStorage persistence ✅ (just needs strategy hookup)
-
-## Key Learnings from Phase 1 & 2
-
-### Phase 1 Learnings ✅
-1. **Time/lanes abstraction is sound**: Strategy pattern works perfectly
-2. **FLIP animations**: Svelte's `animate:flip` provides smooth reordering (300ms)
-3. **Drag cursor positioning**: Centering cursor vertically on column preview fixes drop detection
-4. **Yjs persistence**: Nested Y.Maps with observeDeep() for granular field updates
-
-### Phase 2 Learnings ✅
-1. **Strategy Pattern**: OrientationStrategy cleanly separates vertical/horizontal logic
-2. **Both Strategies Implemented**: VerticalOrientation AND HorizontalOrientation are complete with all methods
-3. **Operations Classes**: CardOperations, DragOperations, ColumnOperations, UndoRedoOperations work well
-4. **SheetState**: Centralized reactive state with `$state()` and `$derived()` runes
-5. **Component Hierarchy**: SheetGrid → SheetColumn → SheetCard works cleanly
-6. **App Shell**: Toolbar, AppLayout, LevelsBar, Breadcrumb extracted successfully
-7. **Frozen Row Scroll**: Wheel event propagation needed for vertical scroll on frozen row
-
-### What Actually Exists (Phase 2 Complete)
-```
-frontend/src/lib/
-├── app/
-│   ├── AppLayout.svelte        ✅ Top-level layout shell
-│   ├── Toolbar.svelte          ✅ With orientation toggle UI (vertical/horizontal buttons)
-│   ├── LevelsBar.svelte        ✅ Left sidebar navigation
-│   └── Breadcrumb.svelte       ✅ Navigation breadcrumbs
-├── sheet/
-│   ├── SheetState.svelte.ts    ✅ Centralized state with $state runes
-│   ├── operations/
-│   │   ├── CardOperations.ts       ✅ Card CRUD, edit, delete
-│   │   ├── DragOperations.ts       ✅ Card drag/drop within grid
-│   │   ├── ColumnOperations.ts     ✅ Lane operations (delete, duplicate, download)
-│   │   ├── ColumnDragOperations.ts ✅ Lane drag/drop reordering
-│   │   └── UndoRedoOperations.ts   ✅ Undo/redo stack management
-│   ├── strategies/
-│   │   └── orientation/
-│   │       ├── OrientationStrategy.ts      ✅ Full interface with 11 methods
-│   │       ├── VerticalOrientation.ts      ✅ FULLY IMPLEMENTED (122 lines)
-│   │       └── HorizontalOrientation.ts    ✅ FULLY IMPLEMENTED (125 lines)
-│   └── types.ts                ✅ TypeScript interfaces
-├── components/
-│   ├── SheetGrid.svelte        ✅ Main grid with frozen row (vertical only)
-│   ├── SheetColumn.svelte      ✅ Individual column/lane
-│   ├── SheetCard.svelte        ✅ Individual card
-│   ├── CardModal.svelte        ✅ Edit modal with canvas
-│   ├── CardContextMenu.svelte  ✅ Right-click menu
-│   ├── ConfirmDialog.svelte    ✅ Confirmation dialogs
-│   └── ToastNotification.svelte ✅ Toast notifications
-└── ySheet.ts                   ✅ Yjs connection (unchanged)
-```
-
-### Phase 2 Achievements
-- **Reduced +page.svelte**: From 4,648 lines → ~730 lines
-- **Proper Reactivity**: All state uses `$state()`, `$derived()`, `$effect()`
-- **Clean Separation**: Operations, strategies, components all separated
-- **Orientation Toggle UI**: Already exists in Toolbar.svelte with custom SVG icons
-- **Error Handling**: Orientation change wrapped in try-catch with toast
-- **Both Strategies Complete**: VerticalOrientation AND HorizontalOrientation fully implemented with all 11 interface methods
-
-### OrientationStrategy Interface (11 Methods)
-Both strategies implement:
-1. `getTimeline(rows, cols)` - Returns time axis
-2. `getLanes(rows, cols)` - Returns lanes axis
-3. `cellKey(timeId, laneId)` - Constructs cell keys
-4. `parseCellKey(key)` - Parses cell keys
-5. `calculateInsertBefore(rect, mousePos)` - Drag drop positioning
-6. `getDragAxis()` - Returns 'x' or 'y'
-7. `shiftCellsForwardInTime(...)` - Shift operations for drag/drop
-8. `shiftCellsBackwardInTime(...)` - Shift operations for undo/redo
-9. `getContainerFlexDirection()` - Layout direction
-10. `getLaneFlexDirection()` - Lane direction
-11. `getFrozenLaneStyle()` - Frozen header positioning
+- **Model**: `ySheet.ts` with `rowOrder`, `colOrder`, `cells` - **unchanged, orientation-agnostic**
+- **View**: Modular components (SheetGrid, SheetColumn, SheetCard)
+- **State**: Centralized in `SheetState.svelte.ts` with `$state()` runes
+- **Operations**: CardOperations, DragOperations, UndoRedoOperations, ColumnOperations classes
+- **Strategies**: OrientationStrategy interface with VerticalOrientation implemented
+- **Orientation**: Vertical only (HorizontalOrientation ready to implement)
 
 ---
 
-## Phase 3: Wire Up Horizontal Orientation UI
-**Branch**: `feat/horizontal-orientation` (create from `feat/time-lanes-abstraction`)
-**Goal**: Connect the existing HorizontalOrientation strategy to the UI layer
+## Phase 3: Horizontal Orientation - Pure View Transform
+
+**Branch**: `feat/horizontal-orientation`
+**Starting Commit**: `da168a7` (before horizontal UI implementation)
+**Goal**: Add horizontal mode as CSS/rendering transformation of same canonical data
 **Prerequisites**: Phase 1 & 2 complete ✅
 
-### IMPORTANT: What's Already Done ✅
+### Core Principle ⭐
 
-The work is **90% complete**! Here's what exists:
+**The Yjs data structure NEVER changes based on orientation.**
 
-1. ✅ **HorizontalOrientation Strategy**: Fully implemented with all 11 methods
-2. ✅ **VerticalOrientation Strategy**: Fully implemented with all 11 methods
-3. ✅ **OrientationStrategy Interface**: Complete with all required methods
-4. ✅ **Orientation Toggle UI**: Toolbar has vertical/horizontal buttons
-5. ✅ **State Management**: `SheetState.orientation` is reactive
-6. ✅ **localStorage**: `savePreference()` and `loadPreference()` methods exist
-7. ✅ **Error Handling**: Toast shows "Horizontal orientation not yet implemented"
+Orientation is purely a client-side view transformation. Multiple users can view the same sheet in different orientations simultaneously.
 
-### What Needs to Be Done ⏳ (Only 10% remaining!)
+### Canonical Data Format (Immutable)
 
-1. **Update SheetGrid.svelte** to use strategy methods for rendering
-2. **Update DragOperations** to use `strategy.calculateInsertBefore()` and `strategy.getDragAxis()`
-3. **Test horizontal mode** thoroughly
-4. **Remove error toast** from orientation toggle
+```typescript
+// This NEVER changes regardless of orientation
+rows = ['r-0', 'r-1', 'r-2', ...]  // Time IDs
+cols = ['c-0', 'c-1', 'c-2', ...]  // Lane IDs
+cells = {
+  'r-0:c-0': { cardId: 'card-A' },
+  'r-0:c-1': { cardId: 'card-B' },
+  'r-1:c-0': { cardId: 'card-C' },
+  // Always ${rowId}:${colId} format
+}
+```
 
-That's it! The strategies are done. We just need to wire them up.
+### Mental Model
+
+**Lanes are containers (cols array):**
+- Vertical mode: lanes appear as columns (going across)
+- Horizontal mode: lanes appear as rows (going down)
+- **Same data, different visual direction**
+
+**Time flows within lanes (rows array):**
+- Vertical mode: time flows down within each column
+- Horizontal mode: time flows right within each row
+- **Same progression, different visual direction**
+
+**All operations happen in lanes:**
+- Insert/delete: shift cards in time within the lane
+- Lane reorder: change order of lanes (column/row reordering)
+- **Same operations, different visual appearance**
+
+### Coordinate System - Key Insight!
+
+**Both orientations use IDENTICAL iteration:**
+
+```svelte
+<!-- SAME CODE FOR BOTH ORIENTATIONS! -->
+{#each displayCols as laneId}  <!-- Lanes (c-0, c-1, c-2) -->
+  {#each displayRows as timeId}  <!-- Times (r-0, r-1, r-2) -->
+    {@const key = `${timeId}:${laneId}`}  <!-- Always same format! -->
+    <!-- Render card -->
+  {/each}
+{/each}
+```
+
+**The ONLY difference:**
+- **Vertical:** Outer loop creates `<Column style="flex-direction: column">`
+- **Horizontal:** Outer loop creates `<Row style="flex-direction: row">`
+
+**No coordinate swapping needed!** The transpose is purely CSS.
 
 ---
 
-## Phase 3 Tasks
+## Implementation Tasks
 
-### Task 1: Update SheetGrid to Use Strategy Methods
+### Task 1: Verify/Update OrientationStrategy
+
+**File**: `frontend/src/lib/sheet/strategies/orientation/OrientationStrategy.ts`
+
+Ensure both strategies use IDENTICAL cellKey:
+
+```typescript
+interface OrientationStrategy {
+  cellKey(timeId: string, laneId: string): string
+  // Both return: `${timeId}:${laneId}`
+  // No swapping! Same format for both orientations.
+}
+```
+
+**Files to check:**
+- `VerticalOrientation.ts` - should return `${timeId}:${laneId}`
+- `HorizontalOrientation.ts` - should return `${timeId}:${laneId}` (SAME!)
+
+### Task 2: Add Horizontal Mode Rendering to SheetGrid
+
 **File**: `frontend/src/lib/components/SheetGrid.svelte`
 
-**Current State**: SheetGrid is hardcoded for vertical layout only
-
-**What to Change**:
+**Current structure:**
 ```svelte
-<script lang="ts">
-  // Add orientation prop
-  export let orientation: 'vertical' | 'horizontal'
-  export let strategy: OrientationStrategy  // Pass the strategy instance
-
-  // ... existing props ...
-</script>
-
-<!-- Use strategy methods for layout -->
-<div
-  class="sheet-view"
-  style="flex-direction: {strategy.getContainerFlexDirection()}"
->
-  {#if stickyTopRow}
-    <div
-      class="frozen-lane"
-      style="
-        flex-direction: {strategy.getLaneFlexDirection()};
-        {Object.entries(strategy.getFrozenLaneStyle())
-          .map(([k, v]) => `${k}: ${v}`)
-          .join('; ')}
-      "
-    >
-      <!-- Frozen header cards -->
-    </div>
-  {/if}
-
-  <div
-    class="lanes-container"
-    style="flex-direction: {strategy.getContainerFlexDirection()}"
-  >
-    <!-- Render lanes using strategy -->
-    {#each displayLanes as laneId (laneId)}
-      <div
-        class="lane"
-        style="flex-direction: {strategy.getLaneFlexDirection()}"
-      >
-        <!-- Render cards in this lane -->
-      </div>
+{#if orientation === 'vertical'}
+  <div class="frozen-row">...</div>
+  <div class="columns-container">
+    {#each displayCols as laneId}
+      <SheetColumn {laneId} times={displayRows} />
     {/each}
   </div>
-</div>
+{/if}
 ```
 
-**Key Changes**:
-- Pass `strategy` prop from +page.svelte
-- Use `strategy.getContainerFlexDirection()` for main container
-- Use `strategy.getLaneFlexDirection()` for individual lanes
-- Use `strategy.getFrozenLaneStyle()` for frozen header positioning
-- No conditional rendering needed - strategy methods handle everything!
+**Add horizontal mode (NEW):**
+```svelte
+{#if orientation === 'vertical'}
+  <!-- Existing vertical mode (unchanged) -->
+{:else}
+  <!-- NEW: Horizontal mode -->
+  <div class="horizontal-container">
+    <!-- Frozen column (left side) -->
+    {#if stickyTopRow}
+      <div class="frozen-column">
+        {#each displayCols as laneId (laneId)}
+          {@const timeId = displayRows[0]}  <!-- First time -->
+          {@const key = `${timeId}:${laneId}`}  <!-- Note: Same format! -->
+          {@const cell = cellsMap.get(key)}
+          {@const cardId = cell?.cardId}
+          {@const card = cardId ? cardsMetadata.get(cardId) : null}
 
-### Task 2: Update DragOperations to Use Strategy
-**File**: `frontend/src/lib/sheet/operations/DragOperations.ts`
+          <div class="lane-header-row">
+            <!-- Lane title -->
+            <div class="lane-title">
+              <input
+                type="text"
+                value={shotTitles.get(laneId) || `Lane ${laneId}`}
+                onchange={(e) => onShotTitleChange(laneId, e.currentTarget.value)}
+              />
+            </div>
 
-**Current Issue**: Drag positioning is hardcoded for vertical (Y-axis)
+            <!-- First card in lane -->
+            {#if card}
+              <!-- Render card (reuse existing card markup) -->
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
 
-**What to Change**:
+    <!-- Scrollable rows (right side) -->
+    <div class="rows-container">
+      {#each displayCols as laneId (laneId)}
+        <div class="row">
+          {#each displayRows.slice(1) as timeId (timeId)}
+            {@const key = `${timeId}:${laneId}`}  <!-- Note: Same format! -->
+            {@const cell = cellsMap.get(key)}
+            {@const cardId = cell?.cardId}
+            {@const card = cardId ? cardsMetadata.get(cardId) : null}
 
-```typescript
-handleDragStart(e: DragEvent, time: string, lane: string, cardId: string): void {
-  // ... existing setup code ...
+            {#if card}
+              <!-- Render card -->
+            {:else}
+              <!-- Empty cell -->
+            {/if}
+          {/each}
+        </div>
+      {/each}
+    </div>
+  </div>
+{/if}
+```
 
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move'
-    const target = e.currentTarget as HTMLElement
-    const rect = target.getBoundingClientRect()
+**Key points:**
+- Use `displayCols` and `displayRows` as-is (NO SWAPPING!)
+- Outer loop: lanes (`displayCols`)
+- Inner loop: times (`displayRows`)
+- Cell key: always `${timeId}:${laneId}` (same as vertical!)
 
-    // Use strategy to get drag axis
-    const dragAxis = this.strategy.getDragAxis()
+### Task 3: Add Horizontal Mode CSS
 
-    if (dragAxis === 'y') {
-      // Vertical: center vertically
-      const offsetY = rect.height / 2
-      e.dataTransfer.setDragImage(target, e.clientX - rect.left, offsetY)
-    } else {
-      // Horizontal: center horizontally
-      const offsetX = rect.width / 2
-      e.dataTransfer.setDragImage(target, offsetX, e.clientY - rect.top)
-    }
-  }
+**File**: `frontend/src/lib/components/SheetGrid.svelte` (style section)
 
-  // ... rest of existing code ...
+```css
+/* Horizontal mode container */
+.horizontal-container {
+  display: flex;
+  flex-direction: row;  /* frozen-column | rows-container */
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
 }
 
-handleDragOver(e: DragEvent, time: string, lane: string, element: HTMLElement): void {
-  e.preventDefault()
-  if (!this.state.isDragging) return
+/* Frozen column on left */
+.frozen-column {
+  display: flex;
+  flex-direction: column;  /* lanes stack vertically */
+  overflow-y: auto;
+  flex-shrink: 0;
+  border-right: 2px solid rgba(255, 255, 255, 0.15);
+  padding-right: 1rem;
+  margin-right: 1rem;
+}
 
-  const rect = element.getBoundingClientRect()
-  const mousePos = { x: e.clientX, y: e.clientY }
+.lane-header-row {
+  display: flex;
+  flex-direction: row;  /* title + card go horizontally */
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  margin-bottom: 0.5rem;
+}
 
-  // Use strategy to calculate insert position
-  const insertBefore = this.strategy.calculateInsertBefore(rect, mousePos)
+.lane-title {
+  writing-mode: horizontal-tb;  /* Normal text, not rotated */
+  flex-shrink: 0;
+}
 
-  this.state.dragPreview = {
-    targetTime: time,
-    targetLane: lane,
-    insertBefore
-  }
+/* Rows container */
+.rows-container {
+  display: flex;
+  flex-direction: column;  /* rows stack vertically */
+  overflow-y: auto;
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 2rem;
+}
+
+/* Individual row */
+.row {
+  display: flex;
+  flex-direction: row;  /* cards flow horizontally */
+  gap: 0.5rem;
+  flex-shrink: 0;
+  margin-bottom: 0.5rem;
+  min-height: fit-content;
 }
 ```
 
-**Key Changes**:
-- Use `this.strategy.getDragAxis()` instead of hardcoded 'y'
-- Use `this.strategy.calculateInsertBefore(rect, mousePos)` instead of hardcoded Y comparison
-- Everything else works automatically!
+### Task 4: Update Orientation Toggle
 
-### Task 3: Pass Strategy to Components
 **File**: `frontend/src/routes/+page.svelte`
 
-**What to Add**:
-```typescript
-// Pass strategy instance to SheetGrid
-<SheetGrid
-  orientation={state.orientation.name}
-  strategy={state.orientation}  // Pass the actual strategy instance
-  // ... rest of existing props ...
-/>
-```
+Ensure the toggle properly switches orientation and shows toast:
 
-That's it! The strategy instance already has all the methods.
-
-### Task 4: Remove Error Toast from Orientation Toggle
-**File**: `frontend/src/routes/+page.svelte`
-
-**Current Code** (~line 665):
-```typescript
-onSetOrientation={(newOrientation) => {
-  try {
-    state.setOrientation(newOrientation)
-    state.savePreference('orientation', newOrientation)
-  } catch (error) {
-    showToast(error instanceof Error ? error.message : 'Failed to change orientation')
-  }
-}}
-```
-
-**What to Change**:
 ```typescript
 onSetOrientation={(newOrientation) => {
   state.setOrientation(newOrientation)
   state.savePreference('orientation', newOrientation)
-  showToast(`Switched to ${newOrientation} mode`)
+
+  const subtitle = newOrientation === 'horizontal'
+    ? 'Time flows left-to-right'
+    : 'Time flows top-to-bottom'
+
+  showToast(`Switched to ${newOrientation} mode`, subtitle)
 }}
 ```
 
-Remove the try-catch since HorizontalOrientation no longer throws errors!
+### Task 5: Verify Operations Work with Both Orientations
 
-### Task 5: Update SheetState to Use Strategy Methods
-**File**: `frontend/src/lib/sheet/SheetState.svelte.ts`
+**All operations should work unchanged!**
 
-**Check if operations are using strategy**:
-- Ensure `getTimeline()` calls `this.orientation.getTimeline(this.rows, this.cols)`
-- Ensure `getLanes()` calls `this.orientation.getLanes(this.rows, this.cols)`
+The operations classes (CardOperations, DragOperations, etc.) already use semantic coordinates (timeId, laneId), so they work for both orientations automatically.
 
-This might already be done in Phase 2.
+**Verify:**
+- [ ] Card delete compacts lane correctly (up in vertical, left in horizontal)
+- [ ] Card drag/drop works within lane
+- [ ] Card drag/drop between lanes works
+- [ ] Lane reordering works (column drag in vertical, row drag in horizontal)
+- [ ] Undo/redo works correctly
+
+---
+
+## Visual Examples
+
+### Canonical Data (Same for Both Views)
+
+```
+rows = ['r-0', 'r-1']
+cols = ['c-0', 'c-1']
+cells = {
+  'r-0:c-0': card-A,
+  'r-0:c-1': card-B,
+  'r-1:c-0': card-C,
+  'r-1:c-1': card-D
+}
+```
+
+### Vertical Mode Display
+
+```
+         Lane A    Lane B
+         (c-0)     (c-1)
+       ┌─────────┬─────────┐
+Shot 0 │ card-A  │ card-B  │
+(r-0)  │ r-0:c-0 │ r-0:c-1 │
+       ├─────────┼─────────┤
+Shot 1 │ card-C  │ card-D  │
+(r-1)  │ r-1:c-0 │ r-1:c-1 │
+       └─────────┴─────────┘
+
+Time flows ↓ (within columns)
+Lanes go → (across columns)
+```
+
+### Horizontal Mode Display (Transposed View)
+
+```
+           Shot 0    Shot 1
+           (r-0)     (r-1)
+       ┌──────────┬──────────┐
+Lane A │ card-A   │ card-C   │
+(c-0)  │ r-0:c-0  │ r-1:c-0  │
+       ├──────────┼──────────┤
+Lane B │ card-B   │ card-D   │
+(c-1)  │ r-0:c-1  │ r-1:c-1  │
+       └──────────┴──────────┘
+
+Time flows → (within rows)
+Lanes go ↓ (down rows)
+```
+
+**Notice:** Same cell keys! Just different visual arrangement.
 
 ---
 
 ## Testing Checklist
 
-### Horizontal Mode Testing
-- [ ] Toggle to horizontal - layout rotates correctly
-- [ ] Frozen column on left with header cards stacked vertically
-- [ ] Scrollable rows flow right (time flows horizontally)
-- [ ] Vertical scroll for lanes (rows)
-- [ ] Horizontal scroll for time (columns)
-- [ ] Drag cards within row (right along timeline)
-- [ ] Drop cards on empty cells
-- [ ] Insert position indicator shows left/right (not top/bottom)
-- [ ] Drag rows up/down (lane reordering)
-- [ ] Undo/redo works correctly
-- [ ] Delete card works
-- [ ] Edit card in modal works
-- [ ] Upload media works
-- [ ] Column download works
-- [ ] Switch back to vertical - data intact
+### Data Consistency
+- [ ] Vertical column c-0 shows: card-A, card-C (going down)
+- [ ] Horizontal row c-0 shows: card-A, card-C (going right)
+- [ ] Same cards, transposed layout ✓
+- [ ] Cell keys remain unchanged when switching orientations
 
-### Vertical Mode (Regression Testing)
-- [ ] All existing functionality still works
-- [ ] No visual regressions
-- [ ] Frozen row scroll propagation works
-- [ ] Column reordering works
-- [ ] All operations work as before
+### Operations in Both Modes
+- [ ] Delete card in vertical: column compacts upward
+- [ ] Delete card in horizontal: row compacts leftward
+- [ ] Drag card within lane works correctly
+- [ ] Drag card to different lane works correctly
+- [ ] Drag entire lane (column/row reordering) works
+- [ ] Undo/redo works correctly in both modes
 
-### Persistence Testing
+### Multi-User (Critical!)
+- [ ] User A in vertical, User B in horizontal
+- [ ] Both see same data (transposed view)
+- [ ] Changes from A appear in B's view immediately
+- [ ] Changes from B appear in A's view immediately
+- [ ] No data corruption when users use different orientations
+
+### Persistence
 - [ ] Orientation preference saves to localStorage
 - [ ] Page reload restores saved orientation
 - [ ] Switching orientations updates localStorage
-- [ ] Data persists correctly across orientation changes
+
+---
+
+## What NOT to Do ❌
+
+1. ❌ **Don't swap displayRows and displayCols arrays**
+2. ❌ **Don't transpose cell data in Yjs when switching orientations**
+3. ❌ **Don't create different cellKey logic for horizontal mode**
+4. ❌ **Don't modify SheetState.setOrientation to transpose data**
+5. ❌ **Don't modify operations code (already orientation-agnostic)**
+
+## What TO Do ✅
+
+1. ✅ **Use same arrays for both modes** (displayRows, displayCols)
+2. ✅ **Use same cellKey format** (`${timeId}:${laneId}`)
+3. ✅ **Change only HTML structure and CSS** (vertical columns vs horizontal rows)
+4. ✅ **Iterate lanes × times** in both modes (just different containers)
+5. ✅ **Let CSS handle the visual transformation** (flex-direction)
 
 ---
 
 ## Success Criteria
 
-- [ ] Toggle switches smoothly between vertical and horizontal
-- [ ] Vertical mode: time flows down, lanes are columns (works as before)
-- [ ] Horizontal mode: time flows right, lanes are rows
-- [ ] Drag/drop works correctly in both orientations using strategy methods
-- [ ] Lane reordering works in both orientations
-- [ ] Undo/redo works in both orientations
-- [ ] Preference persists across page reloads via localStorage
-- [ ] All operations (delete, edit, upload, download) work in both modes
+- [ ] Visual transpose works: First column in vertical = first row in horizontal
+- [ ] Operations unchanged: All card/lane operations work identically in both modes
+- [ ] Multi-user works: Different users can use different orientations on same sheet
+- [ ] No data changes: Switching orientation never modifies Yjs data
+- [ ] Performance: No lag when switching orientations
+- [ ] All cells have same keys regardless of orientation
 - [ ] No regressions in vertical mode
-- [ ] No errors in console
-- [ ] Smooth FLIP animations in both modes
 
 ---
 
 ## Estimated Effort
 
-**Original Estimate**: 2-3 days (if strategies weren't implemented)
-**Actual Estimate**: 2-4 hours (since strategies are done!)
+**Total**: 3-4 hours
 
 **Breakdown**:
-- Task 1 (SheetGrid): 1 hour
-- Task 2 (DragOperations): 30 minutes
-- Task 3 (Pass strategy): 15 minutes
-- Task 4 (Remove error): 5 minutes
-- Task 5 (Verify state): 15 minutes
+- Task 1 (Verify strategies): 15 minutes
+- Task 2 (SheetGrid horizontal HTML): 1.5 hours
+- Task 3 (CSS): 30 minutes
+- Task 4 (Toggle): 15 minutes
+- Task 5 (Verify operations): 30 minutes
 - Testing: 1 hour
-
-**Total**: ~3 hours of actual work
 
 ---
 
 ## Commit Message (When Done)
 
 ```
-feat: Enable horizontal orientation with strategy-driven UI
+feat: Add horizontal orientation as pure view transformation
 
-Wire up the existing HorizontalOrientation strategy to the UI layer:
-- Update SheetGrid to use strategy methods for layout direction
-- Update DragOperations to use strategy.calculateInsertBefore()
-- Update DragOperations to use strategy.getDragAxis() for cursor positioning
-- Pass strategy instance to SheetGrid component
-- Remove error toast since HorizontalOrientation is fully implemented
+Implement horizontal mode as a CSS/rendering transformation of the same
+canonical Yjs data structure. Multiple users can now view the same sheet
+in different orientations simultaneously.
 
-The HorizontalOrientation strategy was already complete from Phase 2.
-This commit simply connects it to the rendering layer.
+Key changes:
+- Add horizontal mode rendering to SheetGrid.svelte
+- Use same coordinate system (displayRows/displayCols) for both modes
+- Use same cellKey format for both modes
+- Transpose achieved purely through CSS flex-direction
+- No changes to Yjs data structure or operations code
 
-Users can now toggle between:
-- Vertical: time flows down, lanes are columns (column-major)
-- Horizontal: time flows right, lanes are rows (row-major)
+Architecture:
+- Vertical: lanes=columns, time flows down (column-major)
+- Horizontal: lanes=rows, time flows right (row-major)
+- Both use identical iteration: lanes × times
+- All operations work unchanged in both modes
 
-Both orientations use the same Strategy Pattern methods for all operations.
+The canonical data (rows, cols, cells) never changes based on orientation.
+Orientation is purely a client-side view preference.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -389,18 +439,10 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ---
 
-## Session Instructions
-
-### To execute Phase 3:
-```
-Please execute Phase 3 of the work order in TRANSPOSE_WORK_ORDER.md
-```
-
----
-
 ## Notes
-- Phase 3 is mostly just wiring up existing strategies to the UI
-- Both VerticalOrientation and HorizontalOrientation are complete
-- The Strategy Pattern makes this trivial - just pass the strategy instance and use its methods
-- No complex logic needed - the strategies handle everything
-- Test thoroughly in both orientations before merging
+
+- Orientation is a VIEW-ONLY transformation
+- Yjs data structure is orientation-agnostic
+- Operations code doesn't need orientation conditionals
+- The beauty: same code, same data, different CSS
+- Test multi-user scenarios thoroughly!
