@@ -51,19 +51,28 @@
   // Prevent accidental double-clicks after delete
   let ignoreDoubleClick = false
   let ignoreDoubleClickTimeout: number | null = null
+  let lastDeleteTime = 0
 
   function handleDelete(e: Event) {
     e.stopPropagation()
+
+    // Debounce: Prevent rapid delete clicks (min 300ms between deletes)
+    const now = Date.now()
+    if (now - lastDeleteTime < 300) {
+      return
+    }
+    lastDeleteTime = now
+
     onDeleteCard(rowId, colId)
 
-    // Ignore double-clicks for 500ms after delete to prevent accidental modal opens
+    // Ignore double-clicks for 800ms after delete to prevent accidental modal opens
     ignoreDoubleClick = true
     if (ignoreDoubleClickTimeout) {
       clearTimeout(ignoreDoubleClickTimeout)
     }
     ignoreDoubleClickTimeout = setTimeout(() => {
       ignoreDoubleClick = false
-    }, 500) as unknown as number
+    }, 800) as unknown as number
   }
 
   function handleDoubleClick() {

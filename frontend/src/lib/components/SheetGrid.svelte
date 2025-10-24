@@ -58,6 +58,21 @@
   // Calculate gap based on thumbnail size
   $: gap = thumbnailSize.width * 0.05
 
+  // Debounce delete to prevent rapid clicks being treated as double-click
+  let lastDeleteTime = 0
+  function handleDelete(e: Event, rowId: string, colId: string) {
+    e.stopPropagation()
+
+    // Prevent rapid delete clicks (min 300ms between deletes)
+    const now = Date.now()
+    if (now - lastDeleteTime < 300) {
+      return
+    }
+    lastDeleteTime = now
+
+    onDeleteCard(rowId, colId)
+  }
+
   // Handle vertical scroll on frozen row - propagate to columns container
   function handleFrozenRowWheel(e: WheelEvent) {
     if (columnsContainerRef && Math.abs(e.deltaY) > 0) {
@@ -189,10 +204,7 @@
               {/if}
               <button
                 class="btn-delete"
-                onclick={(e) => {
-                  e.stopPropagation()
-                  onDeleteCard(firstTimeId, colId)
-                }}
+                onclick={(e) => handleDelete(e, firstTimeId, colId)}
               >
                 ×
               </button>
@@ -335,10 +347,7 @@
                 {/if}
                 <button
                   class="btn-delete"
-                  onclick={(e) => {
-                    e.stopPropagation()
-                    onDeleteCard(timeId, laneId)
-                  }}
+                  onclick={(e) => handleDelete(e, timeId, laneId)}
                 >
                   ×
                 </button>
@@ -420,10 +429,7 @@
                 {/if}
                 <button
                   class="btn-delete"
-                  onclick={(e) => {
-                    e.stopPropagation()
-                    onDeleteCard(timeId, laneId)
-                  }}
+                  onclick={(e) => handleDelete(e, timeId, laneId)}
                 >
                   ×
                 </button>
