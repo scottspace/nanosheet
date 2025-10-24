@@ -79,6 +79,13 @@
 
     // Redraw existing strokes
     redrawCanvas()
+
+    // Return cleanup function (required for Svelte actions)
+    return {
+      destroy() {
+        // Cleanup if needed
+      }
+    }
   }
 
   function startDrawing(e: MouseEvent) {
@@ -573,10 +580,8 @@
             />
           {/if}
           <canvas
-            bind:this={canvasRef}
+            use:initCanvas
             class="sketch-canvas"
-            width="800"
-            height="450"
             onmousedown={startDrawing}
             onmousemove={draw}
             onmouseup={stopDrawing}
