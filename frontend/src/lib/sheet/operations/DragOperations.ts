@@ -177,7 +177,7 @@ export class DragOperations {
     // Calculate insert position using orientation-aware logic
     const rect = cardElement.getBoundingClientRect()
     const mousePos = { x: event.clientX, y: event.clientY }
-    const insertBefore = this.state.orientation.calculateInsertBefore(rect, mousePos)
+    const insertBefore = this.strategy.calculateInsertBefore(rect, mousePos)
 
     // Skip frozen time position as drop target ONLY if trying to insert before it
     // Allow inserting after the frozen row (which puts card in position 1)
