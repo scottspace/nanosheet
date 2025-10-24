@@ -835,6 +835,12 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
                         bucket.delete_blob(blob_name)
 
                     logger.info(f"Deleted {len(blobs)} media files from GCS")
+
+                # Also delete the snapshot to force fresh regeneration
+                snapshot_blob = bucket.blob(f"sheets/{sheet_id}/snapshot.ybin")
+                if snapshot_blob.exists():
+                    snapshot_blob.delete()
+                    logger.info(f"Deleted snapshot for sheet {sheet_id}")
             except Exception as e:
                 logger.warning(f"Failed to wipe GCS media (non-fatal): {e}")
 
