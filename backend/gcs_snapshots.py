@@ -31,10 +31,20 @@ def load_snapshot(bucket_name: str, sheet_id: str, ydoc: YDoc) -> bool:
         snapshot_data = blob.download_as_bytes()
 
         # Apply the update to the YDoc
-        apply_update(ydoc, snapshot_data)
-
-        logger.info(f"Loaded snapshot for sheet {sheet_id} ({len(snapshot_data)} bytes)")
-        return True
+        try:
+            apply_update(ydoc, snapshot_data)
+            logger.info(f"Loaded snapshot for sheet {sheet_id} ({len(snapshot_data)} bytes)")
+            return True
+        except Exception as apply_error:
+            # Snapshot is corrupted or incompatible - delete it and start fresh
+            logger.warning(f"Snapshot corrupted for sheet {sheet_id}: {apply_error}")
+            logger.info(f"Deleting corrupted snapshot and starting fresh")
+            try:
+                blob.delete()
+                logger.info(f"Deleted corrupted snapshot for sheet {sheet_id}")
+            except Exception as delete_error:
+                logger.warning(f"Failed to delete corrupted snapshot: {delete_error}")
+            return False
 
     except Exception as e:
         logger.error(f"Error loading snapshot for sheet {sheet_id}: {e}")
