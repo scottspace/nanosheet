@@ -14,6 +14,12 @@ RUN npm install
 # Copy frontend source
 COPY frontend/ ./
 
+# Set build-time environment variables for production
+ARG VITE_API_URL=https://nanosheet.fly.dev
+ARG VITE_YWS=wss://nanosheet.fly.dev/yjs
+ENV VITE_API_URL=${VITE_API_URL}
+ENV VITE_YWS=${VITE_YWS}
+
 # Build frontend (outputs to frontend/dist)
 RUN npm run build
 
