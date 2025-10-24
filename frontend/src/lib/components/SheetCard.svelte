@@ -37,16 +37,46 @@
   // Computed values
   $: isCardDragging = isDragging && draggedCard?.cardId === cardId
   $: isColumnDragHandle = !stickyTopRow && isFirstRow
-  $: shouldShowPlaceholderBefore = dragPreview &&
-    dragPreview.targetTime === rowId &&
-    dragPreview.targetLane === colId &&
-    dragPreview.insertBefore &&
-    !isColumnDragging
-  $: shouldShowPlaceholderAfter = dragPreview &&
-    dragPreview.targetTime === rowId &&
-    dragPreview.targetLane === colId &&
-    !dragPreview.insertBefore &&
-    !isColumnDragging
+
+  // Check if we should show placeholder - hide if hovering over adjacent card in same lane
+  let shouldShowPlaceholderBefore: boolean
+  let shouldShowPlaceholderAfter: boolean
+
+  $: {
+    // Helper to check if we're in the same lane and within ±1 position
+    const isAdjacentInSameLane = () => {
+      if (!draggedCard || !dragPreview) return false
+
+      // Only apply adjacency logic if dragging within the same lane
+      if (draggedCard.laneId !== dragPreview.targetLane) return false
+      if (draggedCard.laneId !== colId) return false
+
+      // Get all time IDs in this lane (rows)
+      const timelineIds = rows
+      const draggedIndex = timelineIds.indexOf(draggedCard.timeId)
+      const targetIndex = timelineIds.indexOf(dragPreview.targetTime)
+
+      if (draggedIndex === -1 || targetIndex === -1) return false
+
+      // Check if target is within ±1 of dragged position
+      const distance = Math.abs(targetIndex - draggedIndex)
+      return distance <= 1
+    }
+
+    shouldShowPlaceholderBefore = dragPreview &&
+      dragPreview.targetTime === rowId &&
+      dragPreview.targetLane === colId &&
+      dragPreview.insertBefore &&
+      !isColumnDragging &&
+      !isAdjacentInSameLane()
+
+    shouldShowPlaceholderAfter = dragPreview &&
+      dragPreview.targetTime === rowId &&
+      dragPreview.targetLane === colId &&
+      !dragPreview.insertBefore &&
+      !isColumnDragging &&
+      !isAdjacentInSameLane()
+  }
 
   // Prevent accidental double-clicks after delete
   let ignoreDoubleClick = false
@@ -390,11 +420,21 @@
   }
 
   .drag-placeholder {
-    background: rgba(255, 255, 255, 0.02);
-    border: 1px solid rgba(255, 255, 255, 0.15);
+    background: rgba(100, 150, 255, 0.08);
+    border: 2px dashed rgba(100, 150, 255, 0.4);
     border-radius: 4px;
-    box-shadow: 0 0 8px rgba(255, 255, 255, 0.15);
+    box-shadow: 0 0 12px rgba(100, 150, 255, 0.2);
     flex-shrink: 0;
+    animation: pulse 1s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% {
+      opacity: 0.8;
+    }
+    50% {
+      opacity: 1;
+    }
   }
 
   /* Blank cell styles */
