@@ -256,6 +256,9 @@ export class SheetState {
   /** Toast message */
   toastMessage = $state('')
 
+  /** Show video modal */
+  showVideoModal = $state(false)
+
   /** Toast progress (0-100) */
   toastProgress = $state<number | undefined>(undefined)
 

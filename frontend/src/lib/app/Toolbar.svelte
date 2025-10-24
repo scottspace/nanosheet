@@ -145,18 +145,11 @@
 
     <button class="btn-toolbar" onclick={() => onShowToast('Archive feature not yet implemented')}>Archive</button>
 
-    <button class="icon-btn" title={isSoundMuted ? "Unmute" : "Mute"} onclick={onToggleSound}>
-      {#if isSoundMuted}
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <path d="M10 4L6 8H3V12H6L10 16V4Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M13 8L17 12M17 8L13 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      {:else}
-        <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
-          <path d="M10 4L6 8H3V12H6L10 16V4Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-          <path d="M14 7C14.6 8 15 9.5 15 10C15 10.5 14.6 12 14 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      {/if}
+    <button class="icon-btn" title="Sound" onclick={onToggleSound}>
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+        <path d="M10 4L6 8H3V12H6L10 16V4Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M14 7C14.6 8 15 9.5 15 10C15 10.5 14.6 12 14 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
     </button>
 
     <!-- Ellipsis menu -->

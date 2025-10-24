@@ -13,6 +13,7 @@
   import ToastNotification from '../lib/components/ToastNotification.svelte'
   import ConfirmDialog from '../lib/components/ConfirmDialog.svelte'
   import CardContextMenu from '../lib/components/CardContextMenu.svelte'
+  import VideoModal from '../lib/components/VideoModal.svelte'
   import { connectSheet, getAllCardIds, setCard, cardMapToObject } from '../lib/ySheet'
   import * as Y from 'yjs'
 
@@ -680,8 +681,7 @@
     state.savePreference('thumbnailSize', index)
   }}
   onToggleSound={() => {
-    state.isSoundMuted = !state.isSoundMuted
-    state.savePreference('isSoundMuted', state.isSoundMuted)
+    state.showVideoModal = true
   }}
   onToggleStickyTopRow={() => {
     state.stickyTopRow = !state.stickyTopRow
@@ -791,6 +791,13 @@
   onCancel={() => {
     state.showConfirmDialog = false
     state.confirmCallback = null
+  }}
+/>
+
+<VideoModal
+  show={state.showVideoModal}
+  onClose={() => {
+    state.showVideoModal = false
   }}
 />
 
