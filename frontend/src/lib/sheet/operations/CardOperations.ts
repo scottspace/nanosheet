@@ -614,7 +614,6 @@ export class CardOperations {
       title: card.title,
       color: card.color,
       prompt: card.prompt,
-      number: card.number,
       media_url: card.media_url,
       thumb_url: card.thumb_url,
       media_type: card.media_type

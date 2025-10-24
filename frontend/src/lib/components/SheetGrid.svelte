@@ -9,6 +9,7 @@
   export let displayRows: string[]
   export let rows: string[]
   export let stickyTopRow: boolean
+  export let orientation: 'vertical' | 'horizontal' = 'vertical'
   export let cellsMap: Map<string, { cardId: string }>
   export let cardsMetadata: Map<string, Card>
   export let thumbnailSize: { width: number; height: number }
@@ -69,7 +70,8 @@
 </script>
 
 <div class="sheet-view">
-  <!-- Frozen header row with shot titles -->
+  {#if orientation === 'vertical'}
+  <!-- VERTICAL MODE: Frozen header row with shot titles -->
   {#if stickyTopRow}
   <div
     bind:this={frozenRowRef}
@@ -178,7 +180,7 @@
                 <input
                   type="text"
                   class="shot-title-input card-title-input"
-                  value={card.number ? `${card.title} ${card.number}` : card.title}
+                  value={card.title}
                   oninput={(e) => onCardTitleInput(cardId, e.currentTarget.value)}
                   onchange={(e) => onCardTitleChange(cardId, e.currentTarget.value)}
                   onclick={(e) => e.stopPropagation()}
@@ -261,6 +263,195 @@
       />
     {/each}
   </div>
+
+  {:else}
+  <!-- HORIZONTAL MODE: Lanes as rows, time flows right -->
+  <div class="horizontal-container">
+    <!-- Frozen column (left side) -->
+    {#if stickyTopRow}
+      <div class="frozen-column" style="gap: {gap}px">
+        {#each displayCols as laneId (laneId)}
+          {@const timeId = displayRows[0]}
+          {@const key = cellKey(timeId, laneId)}
+          {@const cell = cellsMap.get(key)}
+          {@const cardId = cell?.cardId}
+          {@const card = cardId ? cardsMetadata.get(cardId) : null}
+
+          <div class="lane-header-row" style="gap: {gap}px">
+            <!-- Lane title -->
+            <div class="lane-title" style="width: {thumbnailSize.width * 0.6}px">
+              <input
+                type="text"
+                class="shot-title-input horizontal-title"
+                value={laneId.startsWith('phantom-') ? '' : (shotTitles.get(laneId) || `Lane ${laneId.replace('c-', '')}`)}
+                placeholder={laneId.startsWith('phantom-') ? 'New lane' : 'Lane title'}
+                onchange={(e) => onShotTitleChange(laneId, e.currentTarget.value)}
+                disabled={laneId.startsWith('phantom-')}
+              />
+            </div>
+
+            <!-- First card in lane -->
+            {#if card}
+              <div
+                class="shot-card"
+                style="background-color: {card.thumb_url ? 'rgba(0, 0, 0, 0.3)' : card.color}; width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
+                draggable="true"
+                ondragstart={(e) => onDragStart(e, timeId, laneId, cardId)}
+                ondragover={(e) => onDragOver(e, timeId, laneId, e.currentTarget)}
+                ondrop={(e) => onDrop(e, timeId, laneId)}
+                ondragend={onDragEnd}
+                ondblclick={() => onCardDoubleClick(cardId)}
+                oncontextmenu={(e) => onCardContextMenu(e, cardId)}
+              >
+                {#if card.isLoading}
+                  <div class="upload-loading">
+                    <div class="loading-spinner"></div>
+                  </div>
+                {:else if card.media_type === 'video' && card.media_url && card.thumb_url}
+                  <div ondragstart={(e) => e.preventDefault()}>
+                    <VideoMedia src={card.media_url} thumbnail={card.thumb_url} />
+                  </div>
+                {:else if card.thumb_url}
+                  <img
+                    src={card.thumb_url}
+                    alt={card.title}
+                    class="card-thumbnail"
+                    loading="lazy"
+                    decoding="async"
+                    ondragstart={(e) => e.preventDefault()}
+                  />
+                {/if}
+                {#if !card.thumb_url && !card.media_url && !card.isLoading}
+                  <div class="card-title-container">
+                    <input
+                      type="text"
+                      class="shot-title-input card-title-input"
+                      value={card.number ? `${card.title} ${card.number}` : card.title}
+                      oninput={(e) => onCardTitleInput(cardId, e.currentTarget.value)}
+                      onchange={(e) => onCardTitleChange(cardId, e.currentTarget.value)}
+                      onclick={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                {/if}
+                <button
+                  class="btn-delete"
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    onDeleteCard(timeId, laneId)
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            {:else}
+              <!-- Empty first cell -->
+              <div
+                class="empty-cell"
+                style="width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
+                ondragover={(e) => onDragOver(e, timeId, laneId, e.currentTarget)}
+                ondrop={(e) => onDrop(e, timeId, laneId)}
+              >
+                <label class="upload-label">
+                  <input
+                    type="file"
+                    accept="image/*,video/*"
+                    onchange={(e) => onFileUpload(e, timeId, laneId)}
+                  />
+                  <span class="material-symbols-outlined">add_photo_alternate</span>
+                </label>
+              </div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    {/if}
+
+    <!-- Scrollable rows (right side) -->
+    <div class="rows-container" style="gap: {gap}px">
+      {#each displayCols as laneId (laneId)}
+        <div class="horizontal-row" style="gap: {gap}px">
+          {#each displayRows.slice(stickyTopRow ? 1 : 0) as timeId (timeId)}
+            {@const key = cellKey(timeId, laneId)}
+            {@const cell = cellsMap.get(key)}
+            {@const cardId = cell?.cardId}
+            {@const card = cardId ? cardsMetadata.get(cardId) : null}
+
+            {#if card}
+              <div
+                class="shot-card"
+                style="background-color: {card.thumb_url ? 'rgba(0, 0, 0, 0.3)' : card.color}; width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
+                draggable="true"
+                ondragstart={(e) => onDragStart(e, timeId, laneId, cardId)}
+                ondragover={(e) => onDragOver(e, timeId, laneId, e.currentTarget)}
+                ondrop={(e) => onDrop(e, timeId, laneId)}
+                ondragend={onDragEnd}
+                ondblclick={() => onCardDoubleClick(cardId)}
+                oncontextmenu={(e) => onCardContextMenu(e, cardId)}
+              >
+                {#if card.isLoading}
+                  <div class="upload-loading">
+                    <div class="loading-spinner"></div>
+                  </div>
+                {:else if card.media_type === 'video' && card.media_url && card.thumb_url}
+                  <div ondragstart={(e) => e.preventDefault()}>
+                    <VideoMedia src={card.media_url} thumbnail={card.thumb_url} />
+                  </div>
+                {:else if card.thumb_url}
+                  <img
+                    src={card.thumb_url}
+                    alt={card.title}
+                    class="card-thumbnail"
+                    loading="lazy"
+                    decoding="async"
+                    ondragstart={(e) => e.preventDefault()}
+                  />
+                {/if}
+                {#if !card.thumb_url && !card.media_url && !card.isLoading}
+                  <div class="card-title-container">
+                    <input
+                      type="text"
+                      class="shot-title-input card-title-input"
+                      value={card.number ? `${card.title} ${card.number}` : card.title}
+                      oninput={(e) => onCardTitleInput(cardId, e.currentTarget.value)}
+                      onchange={(e) => onCardTitleChange(cardId, e.currentTarget.value)}
+                      onclick={(e) => e.stopPropagation()}
+                    />
+                  </div>
+                {/if}
+                <button
+                  class="btn-delete"
+                  onclick={(e) => {
+                    e.stopPropagation()
+                    onDeleteCard(timeId, laneId)
+                  }}
+                >
+                  ×
+                </button>
+              </div>
+            {:else}
+              <!-- Empty cell -->
+              <div
+                class="empty-cell"
+                style="width: {thumbnailSize.width}px; height: {thumbnailSize.height}px"
+                ondragover={(e) => onDragOver(e, timeId, laneId, e.currentTarget)}
+                ondrop={(e) => onDrop(e, timeId, laneId)}
+              >
+                <label class="upload-label">
+                  <input
+                    type="file"
+                    accept="image/*,video/*"
+                    onchange={(e) => onFileUpload(e, timeId, laneId)}
+                  />
+                  <span class="material-symbols-outlined">add_photo_alternate</span>
+                </label>
+              </div>
+            {/if}
+          {/each}
+        </div>
+      {/each}
+    </div>
+  </div>
+  {/if}
 </div>
 
 <style>
@@ -609,5 +800,115 @@
     to {
       transform: rotate(360deg);
     }
+  }
+
+  /* ============================================================================
+     HORIZONTAL MODE STYLES
+     ============================================================================ */
+
+  /* Horizontal mode container */
+  .horizontal-container {
+    display: flex;
+    flex-direction: row; /* frozen-column | rows-container */
+    height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* Frozen column on left */
+  .frozen-column {
+    display: flex;
+    flex-direction: column; /* lanes stack vertically */
+    overflow-y: auto;
+    overflow-x: visible;
+    flex-shrink: 0;
+    border-right: 2px solid rgba(255, 255, 255, 0.15);
+    padding-right: 1rem;
+    margin-right: 1rem;
+    padding-bottom: 2rem;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge */
+  }
+
+  .frozen-column::-webkit-scrollbar {
+    display: none; /* Chrome/Safari/Opera */
+  }
+
+  .lane-header-row {
+    display: flex;
+    flex-direction: row; /* title + card go horizontally */
+    align-items: center;
+    flex-shrink: 0;
+  }
+
+  .lane-title {
+    writing-mode: horizontal-tb; /* Normal text, not rotated */
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+  }
+
+  .horizontal-title {
+    font-size: clamp(0.7rem, 1.2vw, 0.95rem);
+    text-align: left;
+  }
+
+  /* Rows container */
+  .rows-container {
+    display: flex;
+    flex-direction: column; /* rows stack vertically */
+    overflow-y: auto;
+    overflow-x: auto;
+    flex: 1;
+    min-width: 0;
+    padding-bottom: 2rem;
+  }
+
+  /* Individual row */
+  .horizontal-row {
+    display: flex;
+    flex-direction: row; /* cards flow horizontally */
+    flex-shrink: 0;
+    min-height: fit-content;
+  }
+
+  /* Empty cell styling */
+  .empty-cell {
+    position: relative;
+    border: 1px dashed rgba(255, 255, 255, 0.2);
+    border-radius: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s ease;
+    flex-shrink: 0;
+  }
+
+  .empty-cell:hover {
+    border-color: rgba(255, 255, 255, 0.4);
+    background: rgba(255, 255, 255, 0.05);
+  }
+
+  .upload-label {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+    color: rgba(255, 255, 255, 0.4);
+    transition: color 0.2s ease;
+  }
+
+  .upload-label:hover {
+    color: rgba(255, 255, 255, 0.7);
+  }
+
+  .upload-label input[type="file"] {
+    display: none;
+  }
+
+  .upload-label .material-symbols-outlined {
+    font-size: 2rem;
   }
 </style>

@@ -652,6 +652,12 @@
     try {
       state.setOrientation(newOrientation)
       state.savePreference('orientation', newOrientation)
+
+      const message = newOrientation === 'horizontal'
+        ? 'Switched to horizontal mode - Time flows left-to-right'
+        : 'Switched to vertical mode - Time flows top-to-bottom'
+
+      showToast(message)
     } catch (error) {
       showToast(error instanceof Error ? error.message : 'Failed to change orientation')
     }
@@ -689,6 +695,7 @@
       displayRows={state.displayRows}
       rows={state.rows}
       stickyTopRow={state.stickyTopRow}
+      orientation={state.orientation.name}
       cellsMap={state.cellsMap}
       cardsMetadata={state.cardsMetadata}
       thumbnailSize={state.thumbnailSize}

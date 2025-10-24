@@ -158,7 +158,7 @@
       <input
         type="text"
         class="shot-title-input card-title-input"
-        value={card.number ? `${card.title} ${card.number}` : card.title}
+        value={card.title}
         oninput={(e) => onCardTitleInput(cardId, e.currentTarget.value)}
         onchange={(e) => onCardTitleChange(cardId, e.currentTarget.value)}
         onclick={(e) => e.stopPropagation()}

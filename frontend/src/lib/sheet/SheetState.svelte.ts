@@ -19,7 +19,7 @@
  */
 
 import type { SheetConnection } from '../ySheet'
-import { VerticalOrientation, type OrientationStrategy } from './strategies/orientation'
+import { VerticalOrientation, HorizontalOrientation, type OrientationStrategy } from './strategies/orientation'
 import { YjsServerDataSource, type DataSourceStrategy } from './strategies/dataSource'
 import type { DraggedCard, DragPreview, ColumnDragPreview, UndoOperation } from './types'
 
@@ -333,9 +333,7 @@ export class SheetState {
     if (type === 'vertical') {
       this.orientation = new VerticalOrientation()
     } else {
-      // Import HorizontalOrientation when needed
-      // this.orientation = new HorizontalOrientation()
-      throw new Error('Horizontal orientation not yet implemented')
+      this.orientation = new HorizontalOrientation()
     }
 
     // Persist preference

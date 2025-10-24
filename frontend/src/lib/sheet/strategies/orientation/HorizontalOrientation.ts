@@ -4,11 +4,15 @@ import type { OrientationStrategy } from './OrientationStrategy'
  * HorizontalOrientation - Row-major layout (time flows right)
  *
  * In this orientation:
- * - Time flows horizontally (across the columns)
- * - Lanes are vertical (rows)
- * - Cell key format: "col:row" (time:lane) - SWAPPED from vertical!
+ * - Time flows horizontally (across the rows)
+ * - Lanes are vertical (columns)
+ * - Cell key format: "row:col" (time:lane) - SAME as vertical!
  * - Cards line up horizontally within rows
  * - Frozen lane is the left column (sidebar)
+ *
+ * CRITICAL: The canonical data format never changes based on orientation.
+ * rows = time IDs, cols = lane IDs, cells = ${rowId}:${colId}
+ * The transpose is achieved purely through CSS, not data transformation.
  */
 export class HorizontalOrientation implements OrientationStrategy {
   readonly name = 'horizontal' as const
@@ -18,23 +22,22 @@ export class HorizontalOrientation implements OrientationStrategy {
   // ============================================================================
 
   getTimeline(rows: string[], cols: string[]): string[] {
-    return cols // Time flows across the columns
+    return rows // Time flows across (horizontal mode uses rows as time)
   }
 
   getLanes(rows: string[], cols: string[]): string[] {
-    return rows // Lanes are rows
+    return cols // Lanes stack vertically (horizontal mode uses cols as lanes)
   }
 
   cellKey(timeId: string, laneId: string): string {
-    // IMPORTANT: Swapped! col:row format
-    // timeId is a col (time flows horizontally)
-    // laneId is a row (lanes are horizontal tracks)
-    return `${laneId}:${timeId}`
+    // CRITICAL: Same format as vertical! ${timeId}:${laneId}
+    // This ensures the canonical data structure never changes
+    return `${timeId}:${laneId}`
   }
 
   parseCellKey(key: string): { timeId: string; laneId: string } {
-    const [laneId, timeId] = key.split(':')
-    return { timeId, laneId } // timeId is col, laneId is row
+    const [timeId, laneId] = key.split(':')
+    return { timeId, laneId }
   }
 
   // ============================================================================

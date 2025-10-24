@@ -30,8 +30,8 @@ export interface OrientationStrategy {
 
   /**
    * Construct a cell key from semantic time/lane IDs
-   * - Vertical: row:col
-   * - Horizontal: col:row (swapped!)
+   * CRITICAL: Both orientations return ${timeId}:${laneId}
+   * The canonical format never changes based on orientation!
    */
   cellKey(timeId: string, laneId: string): string
 

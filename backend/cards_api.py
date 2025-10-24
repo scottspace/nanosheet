@@ -143,12 +143,12 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
             title = request.title
             color = request.color
         else:
-            # Pick a random color and use its matching name
+            # Pick a random color and use its matching name with number
             card_style = random.choice(PALETTE)
-            title = request.title or card_style["name"]
+            number = random.randint(1, 99)
+            title = request.title or f"{card_style['name']} {number:02d}"
             color = request.color or card_style["color"]
         prompt = request.prompt or random.choice(LOREM_SENTENCES)
-        number = random.randint(1, 99)
         created_at = datetime.now(timezone.utc).isoformat()
 
         # Get media URLs and type from request
@@ -165,7 +165,6 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
             "title": title,
             "color": color,
             "prompt": prompt,
-            "number": number,
             "media_url": media_url,
             "thumb_url": thumb_url,
             "media_type": media_type,
@@ -187,7 +186,6 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
                     "title": title,
                     "color": color,
                     "prompt": prompt,
-                    "number": number,
                     "createdAt": created_at,
                 }
                 if media_url:
@@ -208,7 +206,7 @@ async def create_card(request: CreateCardRequest = CreateCardRequest()):
             title=title,
             color=color,
             prompt=prompt,
-            number=number,
+            number=None,
             media_url=media_url,
             thumb_url=thumb_url,
             media_type=media_type,
@@ -872,10 +870,10 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
         for i in range(total_cards):
             card_id = str(ulid.new())
             card_style = random.choice(PALETTE)
-            title = card_style["name"]
+            number = random.randint(1, 99)
+            title = f"{card_style['name']} {number:02d}"
             color = card_style["color"]
             prompt = random.choice(LOREM_SENTENCES)
-            number = random.randint(1, 99)  # Random number 1-99
             created_at = datetime.now(timezone.utc).isoformat()
 
             # Prepare entity for batch write
@@ -886,7 +884,6 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
                 "title": title,
                 "color": color,
                 "prompt": prompt,
-                "number": number,
                 "createdAt": created_at,
             })
             all_entities.append(entity)
@@ -895,8 +892,7 @@ async def regenerate_sheet(sheet_id: str, request: RegenerateSheetRequest = Rege
                 "cardId": card_id,
                 "title": title,
                 "color": color,
-                "prompt": prompt,
-                "number": number
+                "prompt": prompt
             })
 
         # Batch write all cards to Datastore at once
@@ -1006,7 +1002,6 @@ async def download_column(col_id: str, request: dict):
                     "title": card.get("title"),
                     "color": card.get("color"),
                     "prompt": card.get("prompt", ""),
-                    "number": card.get("number"),
                     "source": f"content/{idx}.png"
                 })
 
